@@ -11,12 +11,12 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { Colors } from '@/constants/colors';
 import { useAppState } from '@/hooks/use-app-state';
 import { useMqttConnection } from '@/hooks/use-mqtt-connection';
 import { useMqttDiscovery } from '@/hooks/use-mqtt-discovery';
+import { hasDevClientNativeModules, isExpoGo } from '@/lib/native-modules';
 import {
   brokerKey,
   friendlyType,
@@ -24,6 +24,7 @@ import {
   sourceOf,
 } from '@/lib/service-type';
 import type { ServiceEntry } from '@/types/broker';
+import { useScreenInsets } from '@/hooks/use-screen-insets';
 
 const NOT_FOUND_GRACE_MS = 12000;
 const PRIVACY_POLICY_URL =
@@ -64,7 +65,8 @@ function defaultPreconfigured(): Record<string, ServiceEntry> {
 
 export default function ScannerScreen() {
   const router = useRouter();
-  const isNative = Platform.OS === 'ios' || Platform.OS === 'android';
+  const isNative = hasDevClientNativeModules();
+  const screenInsets = useScreenInsets();
 
   const { preferredBroker, setPreferredBroker, manualBrokers, setManualBrokers } = useAppState();
   const mqttConn = useMqttConnection();
@@ -242,8 +244,17 @@ export default function ScannerScreen() {
   };
 
   return (
-    <SafeAreaView style={styles.safe} edges={['bottom']}>
-      <ScrollView contentContainerStyle={styles.scroll}>
+    <View style={styles.safe}>
+      <ScrollView
+        contentContainerStyle={[
+          styles.scroll,
+          {
+            paddingTop: screenInsets.paddingTop,
+            paddingBottom: screenInsets.paddingBottom,
+            paddingLeft: screenInsets.paddingLeft,
+            paddingRight: screenInsets.paddingRight,
+          },
+        ]}>
         <View style={styles.headerRow}>
           <Text style={styles.title}>Broker Configuration</Text>
           {isNative ? (
@@ -253,10 +264,15 @@ export default function ScannerScreen() {
               disabled={isRefreshing}>
               <Text style={styles.btnText}>{isRefreshing ? 'Refreshing…' : 'Refresh'}</Text>
             </Pressable>
-          ) : (
-            <Text style={styles.nativeOnly}>mDNS: native only</Text>
-          )}
+          ) : null}
         </View>
+        {!isNative ? (
+          <Text style={styles.expoGoBanner}>
+            {isExpoGo()
+              ? 'Expo Go: use dev build (bun run ios-device) for mDNS and persistence'
+              : 'mDNS: native only'}
+          </Text>
+        ) : null}
 
         {preferredBroker ? (
           <View
@@ -456,7 +472,7 @@ export default function ScannerScreen() {
           </Pressable>
         </View>
       </ScrollView>
-    </SafeAreaView>
+    </View>
   );
 }
 
@@ -520,18 +536,19 @@ function BrokerRow({
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: Colors.background },
-  scroll: { padding: 12, gap: 8, paddingBottom: 24 },
+  scroll: { gap: 8 },
   headerRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  title: { fontSize: 18, fontWeight: '700', color: Colors.text },
-  nativeOnly: {
-    fontSize: 10,
+  title: { fontSize: 18, fontWeight: '700', color: Colors.text, flex: 1 },
+  expoGoBanner: {
+    fontSize: 11,
     color: '#B45309',
     backgroundColor: '#FFFBEB',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 8,
     borderWidth: 1,
     borderColor: '#FDE68A',
+    marginBottom: 4,
   },
   preferredCard: {
     borderWidth: 2,

@@ -8,13 +8,14 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { Colors } from '@/constants/colors';
 import { useMqttConnection } from '@/hooks/use-mqtt-connection';
+import { useScreenInsets } from '@/hooks/use-screen-insets';
 
 export default function ClientScreen() {
   const mqttConn = useMqttConnection();
+  const screenInsets = useScreenInsets();
   const [publishTopic, setPublishTopic] = useState('test/topic');
   const [publishMessage, setPublishMessage] = useState('Hello, MQTT!');
 
@@ -31,12 +32,10 @@ export default function ClientScreen() {
 
   if (!broker) {
     return (
-      <SafeAreaView style={styles.safe} edges={['bottom']}>
-        <View style={styles.emptyWrap}>
-          <Text style={styles.emptyTitle}>No broker selected</Text>
-          <Text style={styles.emptyHint}>Pick a broker on the Scanner tab to connect.</Text>
-        </View>
-      </SafeAreaView>
+      <View style={[styles.safe, styles.emptyWrap, { paddingTop: screenInsets.paddingTop, paddingHorizontal: screenInsets.paddingRight }]}>
+        <Text style={styles.emptyTitle}>No broker selected</Text>
+        <Text style={styles.emptyHint}>Pick a broker on the Scanner tab to connect.</Text>
+      </View>
     );
   }
 
@@ -50,8 +49,17 @@ export default function ClientScreen() {
   };
 
   return (
-    <SafeAreaView style={styles.safe} edges={['bottom']}>
-      <ScrollView contentContainerStyle={styles.scroll}>
+    <View style={styles.safe}>
+      <ScrollView
+        contentContainerStyle={[
+          styles.scroll,
+          {
+            paddingTop: screenInsets.paddingTop,
+            paddingBottom: screenInsets.paddingBottom,
+            paddingLeft: screenInsets.paddingLeft,
+            paddingRight: screenInsets.paddingRight,
+          },
+        ]}>
         <View style={styles.headerRow}>
           <View style={styles.titleRow}>
             <View
@@ -159,13 +167,13 @@ export default function ClientScreen() {
           )}
         </View>
       </ScrollView>
-    </SafeAreaView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: Colors.background },
-  scroll: { padding: 12, gap: 10, paddingBottom: 24 },
+  scroll: { gap: 10 },
   emptyWrap: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 },
   emptyTitle: { fontSize: 18, fontWeight: '700', color: Colors.text },
   emptyHint: { marginTop: 8, fontSize: 14, color: Colors.textMuted, textAlign: 'center' },

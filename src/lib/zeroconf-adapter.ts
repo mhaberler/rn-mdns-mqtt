@@ -1,5 +1,6 @@
-import { Platform } from 'react-native';
 import Zeroconf, { type Service } from 'react-native-zeroconf';
+
+import { hasDevClientNativeModules } from '@/lib/native-modules';
 
 import type { ServiceEntry } from '@/types/broker';
 import { removeLeadingAndTrailingDots, serviceTypeFromFullName, toScanParts } from '@/lib/service-type';
@@ -21,7 +22,8 @@ const activeTypes = new Set<string>();
 const listeners = new Set<DiscoveryListener>();
 let wired = false;
 
-function getZeroconf(): Zeroconf {
+function getZeroconf(): Zeroconf | null {
+  if (!hasDevClientNativeModules()) return null;
   if (!zeroconf) {
     zeroconf = new Zeroconf();
   }
@@ -69,9 +71,9 @@ function emit(event: ZeroconfDiscoveryEvent) {
 
 function wireEvents() {
   if (wired) return;
-  wired = true;
-
   const z = getZeroconf();
+  if (!z) return;
+  wired = true;
 
   z.on('found', (name: string) => {
     const services = z.getServices();
@@ -116,17 +118,17 @@ export function subscribeZeroconf(listener: DiscoveryListener): () => void {
 }
 
 export function startZeroconfScan(serviceType: string) {
-  if (Platform.OS === 'web') return;
+  if (!hasDevClientNativeModules()) return;
   wireEvents();
   if (activeTypes.has(serviceType)) return;
 
   activeTypes.add(serviceType);
   const { type, protocol } = toScanParts(serviceType);
-  getZeroconf().scan(type, protocol, DOMAIN, ANDROID_IMPL);
+  getZeroconf()?.scan(type, protocol, DOMAIN, ANDROID_IMPL);
 }
 
 export function stopZeroconfScan(serviceType: string) {
-  if (Platform.OS === 'web' || !zeroconf) return;
+  if (!hasDevClientNativeModules() || !zeroconf) return;
   if (!activeTypes.has(serviceType)) return;
 
   activeTypes.delete(serviceType);
@@ -142,7 +144,7 @@ export function stopZeroconfScan(serviceType: string) {
 }
 
 export function stopAllZeroconfScans() {
-  if (Platform.OS === 'web' || !zeroconf) return;
+  if (!hasDevClientNativeModules() || !zeroconf) return;
   activeTypes.clear();
   zeroconf.stop(ANDROID_IMPL);
 }
