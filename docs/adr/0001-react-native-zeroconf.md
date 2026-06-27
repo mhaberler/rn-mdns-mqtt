@@ -16,7 +16,7 @@ On **Android**, scans use the **DNSSD** backend (embedded mDNSResponder), not An
 
 1. **Android DNSSD** — only evaluated option with an embedded mDNSResponder path; documented 16KB page alignment for Google Play (Android 15+).
 2. **TXT records** — needed for `buildConnectUrl` (`broker.txtRecord?.path || '/mqtt'`).
-3. **Parallel scans** — separate `scan('mqtt-ws', 'tcp')` and `scan('mqtt-wss', 'tcp')` matches our v1 Scanner (and future Hosts tab) model.
+3. **WS + WSS coverage** — the library exposes one native browse at a time (iOS `NSNetServiceBrowser`, Android DNSSD). We **rotate** `_mqtt-ws` and `_mqtt-wss` scans on an 8s interval instead of starting both back-to-back, which previously dropped slow LAN advertisers (e.g. ESP32 Sensorpod).
 4. **Install base** — ~30k weekly npm downloads vs hundreds for alternatives; long project history with recent maintenance (0.14.0, Dec 2025).
 
 ## Consequences

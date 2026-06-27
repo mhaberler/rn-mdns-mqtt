@@ -2,12 +2,11 @@ import { AppState } from 'react-native';
 
 import { createExternalStore } from '@/lib/external-store';
 import {
-  BROKER_SERVICE_TYPES,
   removeLeadingAndTrailingDots,
 } from '@/lib/service-type';
 import {
   serviceEntryKey,
-  startZeroconfScan,
+  startAllBrokerScans,
   stopAllZeroconfScans,
   subscribeZeroconf,
 } from '@/lib/zeroconf-adapter';
@@ -72,9 +71,7 @@ function onServiceEvent(action: 'added' | 'removed' | 'resolved', service: Servi
 export function startScan() {
   if (isWatching) return;
   isWatching = true;
-  for (const serviceType of BROKER_SERVICE_TYPES) {
-    startZeroconfScan(serviceType);
-  }
+  startAllBrokerScans();
 }
 
 export function stopScan() {
