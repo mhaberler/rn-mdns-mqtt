@@ -5,7 +5,10 @@ import {
   removeLeadingAndTrailingDots,
 } from '@/lib/service-type';
 import {
+  canSoftRefreshDiscovery,
   serviceEntryKey,
+  restartAllBrokerScans,
+  softRefreshBrokerDiscovery,
   startAllBrokerScans,
   stopAllZeroconfScans,
   subscribeZeroconf,
@@ -22,15 +25,19 @@ function onServiceEvent(action: 'added' | 'removed' | 'resolved', service: Servi
   const key = `${service.name || 'unknown'}_${service.domain || 'local'}_${st}`;
 
   if (action === 'added') {
-    discoveredStore.setState((current) => ({
-      ...current,
-      [key]: {
-        ...service,
-        discovered: true,
-        resolved: false,
-        source: 'discovered',
-      },
-    }));
+    discoveredStore.setState((current) => {
+      const existing = current[key];
+      if (existing?.resolved) return current;
+      return {
+        ...current,
+        [key]: {
+          ...service,
+          discovered: true,
+          resolved: false,
+          source: 'discovered',
+        },
+      };
+    });
     return;
   }
 
@@ -81,17 +88,32 @@ export function stopScan() {
 }
 
 export async function refreshDiscovery() {
-  stopScan();
   discoveredStore.setState({});
-  startScan();
+  if (canSoftRefreshDiscovery()) {
+    softRefreshBrokerDiscovery();
+    return;
+  }
+  if (isWatching) {
+    restartAllBrokerScans();
+  } else {
+    startScan();
+  }
 }
 
-export function liveHostForFromDiscovery(name: string, type: string): { host: string; port: number } | null {
+export function liveHostForFromDiscovery(
+  name: string,
+  type: string,
+): Pick<ServiceEntry, 'host' | 'port' | 'ipv4Addresses' | 'ipv6Addresses'> | null {
   const match = Object.values(discoveredStore.getState()).find(
     (s) => s.name === name && s.type === type && s.resolved,
   );
   if (!match) return null;
-  return { host: match.host, port: match.port };
+  return {
+    host: match.host,
+    port: match.port,
+    ipv4Addresses: match.ipv4Addresses,
+    ipv6Addresses: match.ipv6Addresses,
+  };
 }
 
 function registerLifecycle() {

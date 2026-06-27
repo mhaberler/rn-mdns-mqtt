@@ -42,8 +42,10 @@
     "reset-project": "node ./scripts/reset-project.js",
     "android": "expo run:android",
     "android-device": "expo run:android --device",
+    "android-device-release": "expo run:android --device --variant release",
     "ios": "expo run:ios",
     "ios-device": "expo run:ios --device",
+    "ios-device-release": "expo run:ios --device --configuration Release",
     "web": "expo start --web",
     "lint": "expo lint"
   },

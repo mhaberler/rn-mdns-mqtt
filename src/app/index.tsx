@@ -16,6 +16,8 @@ import { Colors } from '@/constants/colors';
 import { useAppState } from '@/hooks/use-app-state';
 import { useMqttConnection } from '@/hooks/use-mqtt-connection';
 import { useMqttDiscovery } from '@/hooks/use-mqtt-discovery';
+import { isBrokerConnectReady, pickConnectHost } from '@/lib/broker-host';
+import { canSoftRefreshDiscovery } from '@/lib/zeroconf-adapter';
 import { hasDevClientNativeModules, isExpoGo } from '@/lib/native-modules';
 import {
   brokerKey,
@@ -143,8 +145,12 @@ export default function ScannerScreen() {
   const refreshScan = async () => {
     if (isRefreshing) return;
     setIsRefreshing(true);
-    await refresh();
-    setTimeout(() => setIsRefreshing(false), 800);
+    const softRefresh = canSoftRefreshDiscovery();
+    try {
+      await refresh();
+    } finally {
+      setTimeout(() => setIsRefreshing(false), softRefresh ? 400 : 3000);
+    }
   };
 
   const navigateToClient = (service: ServiceEntry) => {
@@ -394,6 +400,7 @@ export default function ScannerScreen() {
                 service={service}
                 preferred={isPreferred(service)}
                 resolved={service.resolved}
+                connectReady={isBrokerConnectReady(service)}
                 onOpen={() => navigateToClient(service)}
                 onPrefer={() => setPreferred(service)}
               />
@@ -489,6 +496,7 @@ function BrokerRow({
   service,
   preferred,
   resolved,
+  connectReady,
   onOpen,
   onPrefer,
   onRemove,
@@ -496,10 +504,14 @@ function BrokerRow({
   service: ServiceEntry;
   preferred: boolean;
   resolved?: boolean;
+  connectReady?: boolean;
   onOpen: () => void;
   onPrefer: () => void;
   onRemove?: () => void;
 }) {
+  const endpointHost = pickConnectHost(service);
+  const canOpen = connectReady ?? isBrokerConnectReady(service);
+
   return (
     <View style={[styles.brokerRow, preferred && styles.brokerRowPreferred]}>
       <View style={styles.brokerInfo}>
@@ -510,11 +522,14 @@ function BrokerRow({
           {service.name}
         </Text>
         <Text style={styles.monoSmall}>
-          {service.host}:{service.port}
+          {endpointHost}:{service.port || '…'}
         </Text>
       </View>
       <View style={styles.rowActions}>
-        <Pressable style={styles.iconBtn} onPress={onOpen}>
+        <Pressable
+          style={[styles.iconBtn, !canOpen && styles.iconBtnDisabled]}
+          onPress={canOpen ? onOpen : undefined}
+          disabled={!canOpen}>
           <Text style={styles.iconBtnText}>→</Text>
         </Pressable>
         {!preferred ? (
@@ -664,6 +679,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     backgroundColor: '#F9FAFB',
   },
+  iconBtnDisabled: { opacity: 0.35 },
   iconBtnText: { color: Colors.primary, fontSize: 16, fontWeight: '700' },
   starFilled: { color: Colors.warning, fontSize: 16, width: 32, textAlign: 'center' },
   removeText: { color: Colors.error, fontSize: 18, fontWeight: '700' },

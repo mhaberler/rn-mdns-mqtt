@@ -2,6 +2,12 @@ import '@/lib/polyfills';
 
 import mqtt, { type MqttClient } from 'mqtt';
 
+import {
+  brokerConnectEndpoint,
+  formatHostForUrl,
+  isBrokerConnectReady,
+  normalizeMdnsHost,
+} from '@/lib/broker-host';
 import { createExternalStore } from '@/lib/external-store';
 import { isWssType } from '@/lib/service-type';
 import { liveHostForFromDiscovery } from '@/hooks/use-mqtt-discovery';
@@ -19,12 +25,17 @@ function isTlsType(type: string): boolean {
 }
 
 export function buildBrokerUrl(broker: ServiceEntry): string {
+  const endpoint = brokerConnectEndpoint(broker);
+  if (!endpoint) {
+    const host = formatHostForUrl(normalizeMdnsHost(broker.host));
+    return `ws://${host}:${broker.port || 0}`;
+  }
   const isWs = isWebSocketType(broker.type);
   const isTls = isTlsType(broker.type);
   if (isWs) {
-    return `${isTls ? 'wss' : 'ws'}://${broker.host}:${broker.port}`;
+    return `${isTls ? 'wss' : 'ws'}://${endpoint.host}:${endpoint.port}`;
   }
-  return `${isTls ? 'mqtts' : 'mqtt'}://${broker.host}:${broker.port}`;
+  return `${isTls ? 'mqtts' : 'mqtt'}://${endpoint.host}:${endpoint.port}`;
 }
 
 function buildConnectUrl(broker: ServiceEntry): string {
@@ -46,7 +57,13 @@ function withLiveHost(broker: ServiceEntry): ServiceEntry {
   if (derivedSource(broker) !== 'discovered') return broker;
   const live = liveHostForFromDiscovery(broker.name, broker.type);
   if (!live) return broker;
-  return { ...broker, host: live.host, port: live.port };
+  return {
+    ...broker,
+    host: live.host,
+    port: live.port,
+    ipv4Addresses: live.ipv4Addresses ?? broker.ipv4Addresses,
+    ipv6Addresses: live.ipv6Addresses ?? broker.ipv6Addresses,
+  };
 }
 
 const connectionStateStore = createExternalStore<ConnectionState>('disconnected');
@@ -104,6 +121,13 @@ function connect(brokerArg: ServiceEntry) {
   connectionStateStore.setState('trying');
   errorStore.setState(null);
   connectedBrokerStore.setState(broker);
+
+  if (!isBrokerConnectReady(broker)) {
+    errorStore.setState('Broker not resolved yet — wait for green dot or tap Refresh');
+    connectionStateStore.setState('disconnected');
+    connectedBrokerStore.setState(null);
+    return;
+  }
 
   try {
     const url = buildConnectUrl(broker);
@@ -203,6 +227,8 @@ function publish(topic: string, payload: string): Promise<void> {
 }
 
 async function testConnect(broker: ServiceEntry, timeoutMs: number = 15000): Promise<boolean> {
+  if (!isBrokerConnectReady(broker)) return false;
+
   const url = buildConnectUrl(broker);
   const testTopic = `__test/${Math.random().toString(16).slice(2, 10)}`;
   const testPayload = `test-${Date.now()}`;
