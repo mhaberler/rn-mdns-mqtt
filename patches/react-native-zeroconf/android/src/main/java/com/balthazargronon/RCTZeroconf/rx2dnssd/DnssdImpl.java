@@ -98,6 +98,7 @@ public class DnssdImpl implements Zeroconf {
     }
 
     private final Runnable restartAfterSettleRunnable = this::restartAfterSettle;
+    @Nullable private Runnable pendingHotspotProbe;
 
     public void startDiscoveryWatching() {
         if (discoveryWatching) return;
@@ -223,21 +224,25 @@ public class DnssdImpl implements Zeroconf {
         browseDisposables.put(browseKey, disposable);
         activeBrowseIfIndexes.put(browseKey, ifIndex);
 
-        if (BROWSE_KEY_HOTSPOT.equals(browseKey)) {
+        if (BROWSE_KEY_HOTSPOT.equals(browseKey) && !force) {
             scheduleHotspotProbe(ifIndex);
         }
     }
 
     private void scheduleHotspotProbe(int ifIndex) {
-        mainHandler.postDelayed(
+        if (pendingHotspotProbe != null) {
+            mainHandler.removeCallbacks(pendingHotspotProbe);
+        }
+        pendingHotspotProbe =
                 () -> {
+                    pendingHotspotProbe = null;
                     if (!discoveryWatching) return;
                     Integer activeIf = activeBrowseIfIndexes.get(BROWSE_KEY_HOTSPOT);
                     if (activeIf == null || activeIf != ifIndex) return;
                     Log.d(TAG, "Hotspot browse probe ifIndex=" + ifIndex);
                     startBrowse(BROWSE_KEY_HOTSPOT, ifIndex, true);
-                },
-                HOTSPOT_PROBE_DELAY_MS);
+                };
+        mainHandler.postDelayed(pendingHotspotProbe, HOTSPOT_PROBE_DELAY_MS);
     }
 
     private void stopBrowse(String browseKey) {
