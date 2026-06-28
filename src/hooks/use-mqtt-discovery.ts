@@ -1,19 +1,17 @@
 import { AppState, Platform } from 'react-native';
 
 import { discoveredBrokerKey } from '@/lib/discovered-broker-key';
-import { createExternalStore } from '@/lib/external-store';
 import {
   canRefreshHotspotDiscovery,
   isHotspotDiscoveryActive,
   isHotspotPurgeSignal,
   purgeDiscoveredBySegment,
-  restartHotspotDiscovery,
-  startHotspotDiscovery,
-  stopHotspotDiscovery,
+  restartDiscoveryModeScan,
   subscribeDiscoveryModeChanges,
-  subscribeHotspotDiscovery,
+  subscribeHotspotPurged,
   useDiscoveryMode,
-} from '@/lib/hotspot-nsd-adapter';
+} from '@/lib/discovery-mode';
+import { createExternalStore } from '@/lib/external-store';
 import {
   canSoftRefreshDiscovery,
   restartAllBrokerScans,
@@ -29,7 +27,6 @@ const discoveredStore = createExternalStore<Record<string, ServiceEntry>>({});
 let isWatching = false;
 let lifecycleRegistered = false;
 let zeroconfSubscribed = false;
-let hotspotSubscribed = false;
 let discoveryModeHandlerRegistered = false;
 
 function purgeHotspotBrokers() {
@@ -104,10 +101,6 @@ function onServiceEvent(action: 'added' | 'removed' | 'resolved', service: Servi
 export function startScan() {
   if (isWatching) return;
   isWatching = true;
-
-  if (Platform.OS === 'android') {
-    startHotspotDiscovery();
-  }
   startAllBrokerScans();
 }
 
@@ -115,9 +108,6 @@ export function stopScan() {
   if (!isWatching) return;
   isWatching = false;
   stopAllZeroconfScans();
-  if (Platform.OS === 'android') {
-    stopHotspotDiscovery();
-  }
 }
 
 export async function refreshDiscovery() {
@@ -126,12 +116,7 @@ export async function refreshDiscovery() {
   if (hotspotActive) {
     discoveredStore.setState((current) => purgeDiscoveredBySegment(current, 'hotspot'));
     if (isWatching) {
-      restartHotspotDiscovery();
-      if (canSoftRefreshDiscovery()) {
-        softRefreshBrokerDiscovery();
-      } else {
-        restartAllBrokerScans();
-      }
+      restartDiscoveryModeScan();
     } else {
       startScan();
     }
@@ -191,27 +176,23 @@ function ensureZeroconfSubscription() {
   });
 }
 
-function ensureHotspotSubscription() {
-  if (hotspotSubscribed || Platform.OS !== 'android') return;
-  hotspotSubscribed = true;
-  subscribeHotspotDiscovery(({ action, service }) => {
-    onServiceEvent(action, service);
-  });
-}
-
 function ensureDiscoveryModeHandler() {
   if (discoveryModeHandlerRegistered || Platform.OS !== 'android') return;
   discoveryModeHandlerRegistered = true;
+
   subscribeDiscoveryModeChanges((mode) => {
     if (mode === 'none') {
       purgeHotspotBrokers();
     }
   });
+
+  subscribeHotspotPurged(() => {
+    purgeHotspotBrokers();
+  });
 }
 
 export function useMqttDiscovery() {
   ensureZeroconfSubscription();
-  ensureHotspotSubscription();
   ensureDiscoveryModeHandler();
   registerLifecycle();
 
