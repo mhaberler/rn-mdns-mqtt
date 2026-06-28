@@ -88,15 +88,16 @@ public class DnssdImpl implements Zeroconf {
 
     public void restartDiscoveryScan() {
         stopAllBrowses();
-        mainHandler.removeCallbacks(restartAfterSettle);
-        mainHandler.postDelayed(restartAfterSettle, RESTART_SETTLE_MS);
+        mainHandler.removeCallbacks(restartAfterSettleRunnable);
+        mainHandler.postDelayed(restartAfterSettleRunnable, RESTART_SETTLE_MS);
     }
 
-    private final Runnable restartAfterSettle =
-            () -> {
-                if (!discoveryWatching) return;
-                networkDiscoveryManager.refresh();
-            };
+    private void restartAfterSettle() {
+        if (!discoveryWatching) return;
+        networkDiscoveryManager.refresh();
+    }
+
+    private final Runnable restartAfterSettleRunnable = this::restartAfterSettle;
 
     public void startDiscoveryWatching() {
         if (discoveryWatching) return;
