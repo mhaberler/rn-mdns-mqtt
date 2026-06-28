@@ -46,6 +46,10 @@ public class DnssdImpl implements Zeroconf {
     private static final String DEFAULT_SERVICE_TYPE = "_mqtt-ws._tcp";
     private static final int RESTART_SETTLE_MS = 400;
     private static final int HOTSPOT_PROBE_DELAY_MS = 800;
+    /** Align with typical ESP mDNS re-announce interval. */
+    private static final int HOTSPOT_WATCHDOG_INTERVAL_MS = 15_000;
+    /** Force hotspot re-browse when no resolve or browse event this long. */
+    private static final int HOTSPOT_STALE_MS = 20_000;
 
     private final Rx2Dnssd rxDnssd;
     private final ZeroconfModule zeroconfModule;
@@ -99,6 +103,10 @@ public class DnssdImpl implements Zeroconf {
 
     private final Runnable restartAfterSettleRunnable = this::restartAfterSettle;
     @Nullable private Runnable pendingHotspotProbe;
+    @Nullable private Runnable hotspotWatchdogRunnable;
+    private int hotspotWatchdogIfIndex = -1;
+    private long lastHotspotResolveAtMs = 0;
+    private long lastHotspotBrowseEventAtMs = 0;
 
     public void startDiscoveryWatching() {
         if (discoveryWatching) return;
@@ -196,15 +204,17 @@ public class DnssdImpl implements Zeroconf {
                         .observeOn(AndroidSchedulers.mainThread())
                         .subscribe(
                                 bonjourService -> {
-                                    if (!matchesBrowseSubnet(bonjourService, browseKey)) {
-                                        Log.d(
-                                                TAG,
-                                                "Skipping key="
-                                                        + browseKey
-                                                        + " name="
-                                                        + bonjourService.getServiceName()
-                                                        + " (subnet mismatch)");
+                                    if (BROWSE_KEY_HOTSPOT.equals(browseKey)) {
+                                        lastHotspotBrowseEventAtMs = System.currentTimeMillis();
+                                    }
+                                    String mismatchReason =
+                                            subnetMismatchReason(bonjourService, browseKey);
+                                    if (mismatchReason != null) {
+                                        logSubnetMismatch(bonjourService, browseKey, mismatchReason);
                                         return;
+                                    }
+                                    if (BROWSE_KEY_HOTSPOT.equals(browseKey)) {
+                                        lastHotspotResolveAtMs = System.currentTimeMillis();
                                     }
                                     WritableMap service = serviceInfoToMap(bonjourService, browseKey);
                                     Log.d(TAG, service.toString());
@@ -224,8 +234,13 @@ public class DnssdImpl implements Zeroconf {
         browseDisposables.put(browseKey, disposable);
         activeBrowseIfIndexes.put(browseKey, ifIndex);
 
-        if (BROWSE_KEY_HOTSPOT.equals(browseKey) && !force) {
-            scheduleHotspotProbe(ifIndex);
+        if (BROWSE_KEY_HOTSPOT.equals(browseKey)) {
+            if (!force) {
+                lastHotspotResolveAtMs = 0;
+                lastHotspotBrowseEventAtMs = 0;
+                scheduleHotspotProbe(ifIndex);
+            }
+            startHotspotWatchdog(ifIndex);
         }
     }
 
@@ -245,7 +260,73 @@ public class DnssdImpl implements Zeroconf {
         mainHandler.postDelayed(pendingHotspotProbe, HOTSPOT_PROBE_DELAY_MS);
     }
 
+    private void startHotspotWatchdog(int ifIndex) {
+        stopHotspotWatchdog();
+        hotspotWatchdogIfIndex = ifIndex;
+        hotspotWatchdogRunnable =
+                () -> {
+                    if (!discoveryWatching) return;
+                    Integer activeIf = activeBrowseIfIndexes.get(BROWSE_KEY_HOTSPOT);
+                    if (activeIf == null || activeIf != hotspotWatchdogIfIndex) return;
+
+                    long now = System.currentTimeMillis();
+                    long resolveAgeMs =
+                            lastHotspotResolveAtMs == 0
+                                    ? Long.MAX_VALUE
+                                    : now - lastHotspotResolveAtMs;
+                    long eventAgeMs =
+                            lastHotspotBrowseEventAtMs == 0
+                                    ? Long.MAX_VALUE
+                                    : now - lastHotspotBrowseEventAtMs;
+
+                    if (resolveAgeMs >= HOTSPOT_STALE_MS && eventAgeMs >= HOTSPOT_STALE_MS) {
+                        Log.w(
+                                TAG,
+                                "Hotspot watchdog stale: resolveAge="
+                                        + resolveAgeMs
+                                        + "ms eventAge="
+                                        + eventAgeMs
+                                        + "ms ifIndex="
+                                        + hotspotWatchdogIfIndex
+                                        + " — forcing re-browse");
+                        startBrowse(BROWSE_KEY_HOTSPOT, hotspotWatchdogIfIndex, true);
+                    } else {
+                        Log.d(
+                                TAG,
+                                "Hotspot watchdog ok: resolveAge="
+                                        + resolveAgeMs
+                                        + "ms eventAge="
+                                        + eventAgeMs
+                                        + "ms ifIndex="
+                                        + hotspotWatchdogIfIndex);
+                    }
+                    scheduleHotspotWatchdogTick();
+                };
+        scheduleHotspotWatchdogTick();
+    }
+
+    private void scheduleHotspotWatchdogTick() {
+        if (hotspotWatchdogRunnable == null) return;
+        mainHandler.removeCallbacks(hotspotWatchdogRunnable);
+        mainHandler.postDelayed(hotspotWatchdogRunnable, HOTSPOT_WATCHDOG_INTERVAL_MS);
+    }
+
+    private void stopHotspotWatchdog() {
+        if (hotspotWatchdogRunnable != null) {
+            mainHandler.removeCallbacks(hotspotWatchdogRunnable);
+            hotspotWatchdogRunnable = null;
+        }
+        hotspotWatchdogIfIndex = -1;
+    }
+
     private void stopBrowse(String browseKey) {
+        if (BROWSE_KEY_HOTSPOT.equals(browseKey)) {
+            if (pendingHotspotProbe != null) {
+                mainHandler.removeCallbacks(pendingHotspotProbe);
+                pendingHotspotProbe = null;
+            }
+            stopHotspotWatchdog();
+        }
         Disposable disposable = browseDisposables.remove(browseKey);
         if (disposable != null && !disposable.isDisposed()) {
             disposable.dispose();
@@ -282,41 +363,98 @@ public class DnssdImpl implements Zeroconf {
         return String.format("_%s._%s", type, protocol);
     }
 
-    private boolean matchesBrowseSubnet(BonjourService service, String browseKey) {
+    private static List<String> collectIpv4(BonjourService service) {
         List<String> ipv4 = new ArrayList<>();
         for (InetAddress address : service.getInetAddresses()) {
             if (address instanceof Inet4Address) {
                 ipv4.add(address.getHostAddress());
             }
         }
+        return ipv4;
+    }
+
+    /**
+     * @return null when service matches browse leg subnet; otherwise human-readable reason.
+     */
+    @Nullable
+    private String subnetMismatchReason(BonjourService service, String browseKey) {
+        List<String> ipv4 = collectIpv4(service);
+        String hotspotCidr = networkDiscoveryManager.getHotspotCidr();
+        String upstreamCidr = networkDiscoveryManager.getUpstreamCidr();
 
         if (ipv4.isEmpty()) {
-            return BROWSE_KEY_UPSTREAM.equals(browseKey);
+            if (BROWSE_KEY_UPSTREAM.equals(browseKey)) return null;
+            return "no IPv4 addresses (hostname="
+                    + service.getHostname()
+                    + ", expected hotspotCidr="
+                    + hotspotCidr
+                    + ")";
         }
 
-        String hotspotCidr = networkDiscoveryManager.getHotspotCidr();
         if (BROWSE_KEY_HOTSPOT.equals(browseKey)) {
-            if (hotspotCidr == null) return false;
-            for (String ip : ipv4) {
-                if (Ipv4Subnet.contains(hotspotCidr, ip)) return true;
+            if (hotspotCidr == null) {
+                return "hotspotCidr unknown, ipv4=" + ipv4;
             }
-            return false;
+            for (String ip : ipv4) {
+                if (Ipv4Subnet.contains(hotspotCidr, ip)) return null;
+            }
+            return "ipv4="
+                    + ipv4
+                    + " not in hotspotCidr="
+                    + hotspotCidr
+                    + " (hostname="
+                    + service.getHostname()
+                    + ")";
         }
 
         if (hotspotCidr != null) {
             for (String ip : ipv4) {
-                if (!Ipv4Subnet.contains(hotspotCidr, ip)) return true;
+                if (!Ipv4Subnet.contains(hotspotCidr, ip)) return null;
             }
-            return false;
+            return "ipv4="
+                    + ipv4
+                    + " only on hotspotCidr="
+                    + hotspotCidr
+                    + " (hostname="
+                    + service.getHostname()
+                    + ")";
         }
 
-        String upstreamCidr = networkDiscoveryManager.getUpstreamCidr();
         if (upstreamCidr != null) {
             for (String ip : ipv4) {
-                if (Ipv4Subnet.contains(upstreamCidr, ip)) return true;
+                if (Ipv4Subnet.contains(upstreamCidr, ip)) return null;
             }
+            return "ipv4="
+                    + ipv4
+                    + " not in upstreamCidr="
+                    + upstreamCidr
+                    + " (hostname="
+                    + service.getHostname()
+                    + ")";
         }
-        return true;
+        return null;
+    }
+
+    private void logSubnetMismatch(
+            BonjourService service, String browseKey, String reason) {
+        Log.d(
+                TAG,
+                "Skipping key="
+                        + browseKey
+                        + " name="
+                        + service.getServiceName()
+                        + " port="
+                        + service.getPort()
+                        + " hostname="
+                        + service.getHostname()
+                        + " ipv4="
+                        + collectIpv4(service)
+                        + " hotspotCidr="
+                        + networkDiscoveryManager.getHotspotCidr()
+                        + " upstreamCidr="
+                        + networkDiscoveryManager.getUpstreamCidr()
+                        + " — "
+                        + reason);
     }
 
     private WritableMap serviceInfoToMap(BonjourService serviceInfo, String browseKey) {
