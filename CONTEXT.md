@@ -35,8 +35,8 @@ _Avoid_: MVP (too vague), full parity
 _Avoid_: Capacitor zeroconf plugin, custom Expo module (deferred unless library fails)
 
 **Android mDNS backend**:
-DNSSD (embedded mDNSResponder) via `react-native-zeroconf` for upstream WiFi always. Network-bound NSD via `hotspot-mdns` runs whenever the phone's hotspot AP is on (hotspot segment only). Dual-homed uses DNSSD + hotspot NSD in parallel.
-_Avoid_: Replacing DNSSD with NSD globally; Capacitor NSD-only default
+Patched `react-native-zeroconf` with embedded mDNSResponder (DNSSD). Upstream WiFi uses interface-bound or `ALL_INTERFACES` browse. When hotspot AP is on, a second DNSSD browse binds to the AP interface (`swlan0` / etc.) via `NetworkDiscoveryManager`. Dual-homed runs both browses in parallel; resolves tagged `browseKey` → `discoverySegment`. Patch applied on `postinstall` (`patches/react-native-zeroconf/`).
+_Avoid_: Replacing DNSSD with NSD globally; Capacitor NSD-only default; Expo Go (dev client required)
 
 **Discovery segment**:
 Which L2 multicast domain a discovered broker was found on: **upstream WiFi** or **hotspot**. Distinct from **Broker source** (`discovered` / `manual` / `preconfigured`).

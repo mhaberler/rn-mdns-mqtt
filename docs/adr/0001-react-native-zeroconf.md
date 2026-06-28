@@ -25,5 +25,6 @@ On **Android**, scans use the **DNSSD** backend (embedded mDNSResponder), not An
 - Configure **iOS** `NSBonjourServices` and `NSLocalNetworkUsageDescription`; request multicast entitlement for App Store.
 - Configure **Android** multicast / nearby-WiFi permissions and `usesCleartextTraffic` for LAN brokers (same as Capacitor).
 - Always pass `'DNSSD'` as the Android implementation on `scan()` / `stop()` — do not use default NSD.
+- **`postinstall` patch:** Android hotspot / dual-homed discovery requires our dual-DNSSD patch under `patches/react-native-zeroconf/` (applied by `scripts/apply-zeroconf-patch.sh`). Rebuild the dev client after install.
 - If DNSSD or event semantics fail on target devices (Galaxy S24/S10/A15, iPhone), reassess — first fallback is wrapping our Capacitor native code, not switching to NSD-only libraries.
-- **Hotspot exception:** When Android is dual-homed (WiFi client + hotspot AP), a Network-bound NSD leg supplements DNSSD for the hotspot segment — see [0002-hybrid-android-discovery.md](./0002-hybrid-android-discovery.md).
+- **Hotspot / dual-homed:** When the phone's hotspot AP is on, a second interface-bound DNSSD browse on the AP interface supplements upstream browse — see [0002-hybrid-android-discovery.md](./0002-hybrid-android-discovery.md).

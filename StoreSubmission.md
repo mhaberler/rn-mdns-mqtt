@@ -8,7 +8,7 @@ Forked from Capacitor `mdns-mqtt-vue3` store pack — update URLs and screenshot
 
 ### App Review Notes
 
-MQTT Scout RN is a developer/IoT utility for discovering MQTT brokers via Bonjour/mDNS and publishing/subscribing over MQTT. Native discovery uses NetService (iOS) and embedded mDNSResponder DNSSD (Android) via `react-native-zeroconf` — not a website wrapper. On Android, when the phone's hotspot AP is on, hotspot-segment brokers appear under **Hotspot** (Network-bound NSD). When WiFi client and hotspot are both active, upstream brokers appear under **Upstream WiFi**.
+MQTT Scout RN is a developer/IoT utility for discovering MQTT brokers via Bonjour/mDNS and publishing/subscribing over MQTT. Native discovery uses NetService (iOS) and embedded mDNSResponder DNSSD (Android) via patched `react-native-zeroconf` — not a website wrapper. On Android, when the phone's hotspot AP is on, a second DNSSD browse on the AP interface lists hotspot-segment brokers under **Hotspot**. When WiFi client and hotspot are both active, upstream brokers appear under **Upstream WiFi**.
 
 How to test:
 
@@ -43,6 +43,7 @@ Privacy policy: `PRIVACY.md` in this repo.
 - [ ] Signed AAB via `eas build` or local Gradle release
 - [ ] Bump `versionCode` each upload
 - [ ] Privacy Policy URL in Play listing
-- [ ] Test DNSSD discovery on physical Android (Galaxy, etc.)
-- [ ] Test hotspot-only Android: enable phone hotspot, connect IoT device (no upstream WiFi) — **Hotspot** subsection shows broker
+- [ ] Test DNSSD discovery on physical Android (Galaxy, etc.) — dev client `com.haberlerm.rnmqttmdns`, not Expo Go
+- [ ] Run `npm install` (applies dual-DNSSD zeroconf patch) before release build
+- [ ] Test hotspot-only Android: enable phone hotspot, connect IoT device (no upstream WiFi) — **Hotspot** subsection shows broker (may take ~20s on Samsung AP)
 - [ ] Test dual-homed Android: WiFi client + hotspot — both Upstream WiFi and Hotspot subsections; hotspot clears when tethering off
