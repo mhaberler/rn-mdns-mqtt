@@ -26,3 +26,4 @@ On **Android**, scans use the **DNSSD** backend (embedded mDNSResponder), not An
 - Configure **Android** multicast / nearby-WiFi permissions and `usesCleartextTraffic` for LAN brokers (same as Capacitor).
 - Always pass `'DNSSD'` as the Android implementation on `scan()` / `stop()` — do not use default NSD.
 - If DNSSD or event semantics fail on target devices (Galaxy S24/S10/A15, iPhone), reassess — first fallback is wrapping our Capacitor native code, not switching to NSD-only libraries.
+- **Hotspot exception:** When Android is dual-homed (WiFi client + hotspot AP), a Network-bound NSD leg supplements DNSSD for the hotspot segment — see [0002-hybrid-android-discovery.md](./0002-hybrid-android-discovery.md).

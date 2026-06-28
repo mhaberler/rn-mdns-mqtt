@@ -1,5 +1,7 @@
 export type BrokerSource = 'preconfigured' | 'discovered' | 'manual';
 
+export type DiscoverySegment = 'upstream' | 'hotspot';
+
 export type ServiceEntry = {
   name: string;
   type: string;
@@ -12,6 +14,7 @@ export type ServiceEntry = {
   ipv4Addresses?: string[];
   ipv6Addresses?: string[];
   source?: BrokerSource;
+  discoverySegment?: DiscoverySegment;
   username?: string;
   password?: string;
   rejectUnauthorized?: boolean;

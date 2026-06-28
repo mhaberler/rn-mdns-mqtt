@@ -1,13 +1,23 @@
-import { AppState } from 'react-native';
+import { AppState, Platform } from 'react-native';
 
+import { discoveredBrokerKey } from '@/lib/discovered-broker-key';
 import { createExternalStore } from '@/lib/external-store';
 import {
-  removeLeadingAndTrailingDots,
-} from '@/lib/service-type';
+  canRefreshHotspotDiscovery,
+  isHotspotDiscoveryActive,
+  isHotspotPurgeSignal,
+  purgeDiscoveredBySegment,
+  restartHotspotDiscovery,
+  startHotspotDiscovery,
+  stopHotspotDiscovery,
+  subscribeDiscoveryModeChanges,
+  subscribeHotspotDiscovery,
+  useDiscoveryMode,
+} from '@/lib/hotspot-nsd-adapter';
 import {
   canSoftRefreshDiscovery,
-  serviceEntryKey,
   restartAllBrokerScans,
+  serviceEntryKey,
   softRefreshBrokerDiscovery,
   startAllBrokerScans,
   stopAllZeroconfScans,
@@ -19,10 +29,24 @@ const discoveredStore = createExternalStore<Record<string, ServiceEntry>>({});
 let isWatching = false;
 let lifecycleRegistered = false;
 let zeroconfSubscribed = false;
+let hotspotSubscribed = false;
+let discoveryModeHandlerRegistered = false;
+
+function purgeHotspotBrokers() {
+  discoveredStore.setState((current) => purgeDiscoveredBySegment(current, 'hotspot'));
+}
 
 function onServiceEvent(action: 'added' | 'removed' | 'resolved', service: ServiceEntry) {
-  const st = removeLeadingAndTrailingDots(service.type || '');
-  const key = `${service.name || 'unknown'}_${service.domain || 'local'}_${st}`;
+  if (isHotspotPurgeSignal(service)) {
+    purgeHotspotBrokers();
+    return;
+  }
+
+  if (service.discoverySegment === 'hotspot' && !isHotspotDiscoveryActive()) {
+    return;
+  }
+
+  const key = discoveredBrokerKey(service);
 
   if (action === 'added') {
     discoveredStore.setState((current) => {
@@ -35,6 +59,7 @@ function onServiceEvent(action: 'added' | 'removed' | 'resolved', service: Servi
           discovered: true,
           resolved: false,
           source: 'discovered',
+          discoverySegment: service.discoverySegment ?? 'upstream',
         },
       };
     });
@@ -66,6 +91,7 @@ function onServiceEvent(action: 'added' | 'removed' | 'resolved', service: Servi
           discovered: true,
           resolved: true,
           source: 'discovered',
+          discoverySegment: service.discoverySegment ?? existing?.discoverySegment ?? 'upstream',
           txtRecord: service.txtRecord || existing?.txtRecord || {},
           ipv4Addresses: service.ipv4Addresses || existing?.ipv4Addresses || [],
           ipv6Addresses: service.ipv6Addresses || existing?.ipv6Addresses || [],
@@ -78,6 +104,10 @@ function onServiceEvent(action: 'added' | 'removed' | 'resolved', service: Servi
 export function startScan() {
   if (isWatching) return;
   isWatching = true;
+
+  if (Platform.OS === 'android') {
+    startHotspotDiscovery();
+  }
   startAllBrokerScans();
 }
 
@@ -85,14 +115,37 @@ export function stopScan() {
   if (!isWatching) return;
   isWatching = false;
   stopAllZeroconfScans();
+  if (Platform.OS === 'android') {
+    stopHotspotDiscovery();
+  }
 }
 
 export async function refreshDiscovery() {
-  discoveredStore.setState({});
-  if (canSoftRefreshDiscovery()) {
+  const hotspotActive = canRefreshHotspotDiscovery();
+
+  if (hotspotActive) {
+    discoveredStore.setState((current) => purgeDiscoveredBySegment(current, 'hotspot'));
+    if (isWatching) {
+      restartHotspotDiscovery();
+      if (canSoftRefreshDiscovery()) {
+        softRefreshBrokerDiscovery();
+      } else {
+        restartAllBrokerScans();
+      }
+    } else {
+      startScan();
+    }
+    return;
+  }
+
+  const upstreamSoft = canSoftRefreshDiscovery();
+  if (upstreamSoft) {
+    discoveredStore.setState((current) => purgeDiscoveredBySegment(current, 'hotspot'));
     softRefreshBrokerDiscovery();
     return;
   }
+
+  discoveredStore.setState({});
   if (isWatching) {
     restartAllBrokerScans();
   } else {
@@ -138,11 +191,34 @@ function ensureZeroconfSubscription() {
   });
 }
 
+function ensureHotspotSubscription() {
+  if (hotspotSubscribed || Platform.OS !== 'android') return;
+  hotspotSubscribed = true;
+  subscribeHotspotDiscovery(({ action, service }) => {
+    onServiceEvent(action, service);
+  });
+}
+
+function ensureDiscoveryModeHandler() {
+  if (discoveryModeHandlerRegistered || Platform.OS !== 'android') return;
+  discoveryModeHandlerRegistered = true;
+  subscribeDiscoveryModeChanges((mode) => {
+    if (mode === 'none') {
+      purgeHotspotBrokers();
+    }
+  });
+}
+
 export function useMqttDiscovery() {
   ensureZeroconfSubscription();
+  ensureHotspotSubscription();
+  ensureDiscoveryModeHandler();
   registerLifecycle();
 
   const discoveredBrokers = discoveredStore.useStore();
+  const discoveryMode = useDiscoveryMode();
+  const hotspotDiscoveryActive =
+    discoveryMode === 'hotspotOnly' || discoveryMode === 'dualHomed';
 
   return {
     discoveredBrokers,
@@ -150,7 +226,9 @@ export function useMqttDiscovery() {
     refresh: refreshDiscovery,
     startScan,
     stopScan,
+    hotspotDiscoveryActive,
+    isHotspotDiscoveryActive,
   };
 }
 
-export { serviceEntryKey };
+export { serviceEntryKey, discoveredBrokerKey };

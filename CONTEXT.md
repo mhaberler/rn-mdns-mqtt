@@ -35,8 +35,20 @@ _Avoid_: MVP (too vague), full parity
 _Avoid_: Capacitor zeroconf plugin, custom Expo module (deferred unless library fails)
 
 **Android mDNS backend**:
-DNSSD (embedded mDNSResponder) via `react-native-zeroconf`. Chosen for Android 15+ Play compliance and cross-device reliability.
-_Avoid_: NSD (Capacitor default; not used in RN app)
+DNSSD (embedded mDNSResponder) via `react-native-zeroconf` for upstream WiFi always. Network-bound NSD via `hotspot-mdns` runs whenever the phone's hotspot AP is on (hotspot segment only). Dual-homed uses DNSSD + hotspot NSD in parallel.
+_Avoid_: Replacing DNSSD with NSD globally; Capacitor NSD-only default
+
+**Discovery segment**:
+Which L2 multicast domain a discovered broker was found on: **upstream WiFi** or **hotspot**. Distinct from **Broker source** (`discovered` / `manual` / `preconfigured`).
+_Avoid_: Network, interface (in user-facing copy)
+
+**Upstream WiFi segment**:
+Brokers on the LAN the phone joins as a WiFi client.
+_Avoid_: External WiFi, primary network
+
+**Hotspot segment**:
+Brokers on devices connected to the phone's hotspot/AP.
+_Avoid_: Tether network, AP clients
 
 **iOS mDNS backend**:
 Bonjour / NetService (platform default via `react-native-zeroconf`).

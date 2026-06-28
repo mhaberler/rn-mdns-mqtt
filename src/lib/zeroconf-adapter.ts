@@ -91,6 +91,7 @@ function mapService(
     discovered: true,
     resolved: action === 'resolved' && port > 0,
     source: 'discovered',
+    discoverySegment: 'upstream',
     txtRecord: service.txt ?? {},
     ipv4Addresses: ipv4,
     ipv6Addresses: ipv6,

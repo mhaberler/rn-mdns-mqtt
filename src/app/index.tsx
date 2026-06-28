@@ -26,6 +26,7 @@ import {
   sourceOf,
 } from '@/lib/service-type';
 import type { ServiceEntry } from '@/types/broker';
+import { isHotspotSegment, isUpstreamSegment } from '@/lib/discovered-broker-key';
 import { useScreenInsets } from '@/hooks/use-screen-insets';
 
 const NOT_FOUND_GRACE_MS = 12000;
@@ -72,7 +73,7 @@ export default function ScannerScreen() {
 
   const { preferredBroker, setPreferredBroker, manualBrokers, setManualBrokers } = useAppState();
   const mqttConn = useMqttConnection();
-  const { discoveredBrokers, refresh } = useMqttDiscovery();
+  const { discoveredBrokers, refresh, hotspotDiscoveryActive } = useMqttDiscovery();
 
   const [services] = useState(() => defaultPreconfigured());
   const [manualHost, setManualHost] = useState('');
@@ -102,6 +103,19 @@ export default function ScannerScreen() {
     () => Object.entries(discoveredBrokers).map(([key, service]) => ({ key, service })),
     [discoveredBrokers],
   );
+
+  const upstreamDiscoveredList = useMemo(
+    () => discoveredList.filter(({ service }) => isUpstreamSegment(service)),
+    [discoveredList],
+  );
+
+  const hotspotDiscoveredList = useMemo(
+    () => discoveredList.filter(({ service }) => isHotspotSegment(service)),
+    [discoveredList],
+  );
+
+  const showDiscoveredSection =
+    upstreamDiscoveredList.length > 0 || hotspotDiscoveryActive;
 
   const manualList = useMemo(
     () => manualBrokers.map((service) => ({ key: brokerKey(service), service })),
@@ -392,19 +406,42 @@ export default function ScannerScreen() {
           ))}
         </BrokerSection>
 
-        {discoveredList.length > 0 ? (
+        {showDiscoveredSection ? (
           <BrokerSection title="Discovered">
-            {discoveredList.map(({ key, service }) => (
-              <BrokerRow
-                key={key}
-                service={service}
-                preferred={isPreferred(service)}
-                resolved={service.resolved}
-                connectReady={isBrokerConnectReady(service)}
-                onOpen={() => navigateToClient(service)}
-                onPrefer={() => setPreferred(service)}
-              />
-            ))}
+            {upstreamDiscoveredList.length > 0 ? (
+              <DiscoveredSubsection title="Upstream WiFi">
+                {upstreamDiscoveredList.map(({ key, service }) => (
+                  <BrokerRow
+                    key={key}
+                    service={service}
+                    preferred={isPreferred(service)}
+                    resolved={service.resolved}
+                    connectReady={isBrokerConnectReady(service)}
+                    onOpen={() => navigateToClient(service)}
+                    onPrefer={() => setPreferred(service)}
+                  />
+                ))}
+              </DiscoveredSubsection>
+            ) : null}
+            {hotspotDiscoveryActive ? (
+              <DiscoveredSubsection title="Hotspot">
+                {hotspotDiscoveredList.length > 0 ? (
+                  hotspotDiscoveredList.map(({ key, service }) => (
+                    <BrokerRow
+                      key={key}
+                      service={service}
+                      preferred={isPreferred(service)}
+                      resolved={service.resolved}
+                      connectReady={isBrokerConnectReady(service)}
+                      onOpen={() => navigateToClient(service)}
+                      onPrefer={() => setPreferred(service)}
+                    />
+                  ))
+                ) : (
+                  <Text style={styles.discoveredEmptyHint}>Scanning hotspot…</Text>
+                )}
+              </DiscoveredSubsection>
+            ) : null}
           </BrokerSection>
         ) : null}
 
@@ -464,7 +501,7 @@ export default function ScannerScreen() {
         </BrokerSection>
 
         {preconfiguredList.length === 0 &&
-        discoveredList.length === 0 &&
+        !showDiscoveredSection &&
         manualList.length === 0 ? (
           <Text style={styles.empty}>No brokers available.</Text>
         ) : null}
@@ -487,6 +524,15 @@ function BrokerSection({ title, children }: { title: string; children: React.Rea
   return (
     <View style={styles.section}>
       <Text style={styles.sectionTitle}>{title}</Text>
+      {children}
+    </View>
+  );
+}
+
+function DiscoveredSubsection({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <View style={styles.discoveredSubsection}>
+      <Text style={styles.discoveredSubsectionTitle}>{title}</Text>
       {children}
     </View>
   );
@@ -646,6 +692,21 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     letterSpacing: 0.5,
     paddingHorizontal: 4,
+  },
+  discoveredSubsection: { gap: 4, marginTop: 6 },
+  discoveredSubsectionTitle: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: Colors.textMuted,
+    paddingHorizontal: 8,
+    paddingTop: 2,
+  },
+  discoveredEmptyHint: {
+    fontSize: 13,
+    color: Colors.textMuted,
+    fontStyle: 'italic',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
   },
   brokerRow: {
     flexDirection: 'row',
