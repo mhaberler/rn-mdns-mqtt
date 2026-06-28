@@ -38,7 +38,7 @@ export function buildBrokerUrl(broker: ServiceEntry): string {
   return `${isTls ? 'mqtts' : 'mqtt'}://${endpoint.host}:${endpoint.port}`;
 }
 
-function buildConnectUrl(broker: ServiceEntry): string {
+export function buildConnectUrl(broker: ServiceEntry): string {
   const base = buildBrokerUrl(broker);
   if (isWebSocketType(broker.type)) {
     const wsPath = broker.txtRecord?.path || '/mqtt';
@@ -103,6 +103,13 @@ function cleanup() {
   }
 }
 
+function friendlyConnectError(message: string, url: string): string {
+  if (message.includes('connack timeout')) {
+    return `Broker did not reply (CONNACK timeout) at ${url}. Check IP/port, WS path (/mqtt), same Wi‑Fi, and broker is MQTT-over-WebSocket.`;
+  }
+  return `Connection failed: ${message}`;
+}
+
 function connect(brokerArg: ServiceEntry) {
   const broker = withLiveHost(brokerArg);
 
@@ -136,7 +143,7 @@ function connect(brokerArg: ServiceEntry) {
       clientId: `mqtt_rn_${Math.random().toString(16).slice(2, 10)}`,
       clean: true,
       connectTimeout: 30000,
-      reconnectPeriod: 3000,
+      reconnectPeriod: 0,
     };
 
     if (broker.username) options.username = broker.username;
@@ -165,13 +172,22 @@ function connect(brokerArg: ServiceEntry) {
     });
 
     mqttClient.on('error', (err: Error) => {
-      errorStore.setState(`Connection failed: ${err?.message || 'Unknown error'}`);
+      errorStore.setState(friendlyConnectError(err?.message || 'Unknown error', url));
       connectionStateStore.setState('disconnected');
+      cleanup();
     });
 
     mqttClient.on('close', () => {
+      const wasTrying = connectionStateStore.getState() === 'trying';
+      const wasConnected = connectionStateStore.getState() === 'connected';
       connectionStateStore.setState('disconnected');
-      addMessage('system', 'Connection closed');
+      if (wasTrying) {
+        errorStore.setState(
+          (current) => current ?? `Connection closed before CONNACK at ${url}`,
+        );
+      } else if (wasConnected) {
+        addMessage('system', 'Connection closed');
+      }
     });
 
     mqttClient.on('message', (topic: string, message: Buffer) => {
@@ -297,7 +313,7 @@ export function useMqttConnection() {
     error,
     messages,
     connectedBroker,
-    brokerUrl: connectedBroker ? buildBrokerUrl(connectedBroker) : '',
+    brokerUrl: connectedBroker ? buildConnectUrl(connectedBroker) : '',
     isConnected: connectionState === 'connected',
     isTrying: connectionState === 'trying',
     connect,
