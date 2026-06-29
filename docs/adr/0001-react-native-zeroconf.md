@@ -1,30 +1,38 @@
 # Use react-native-zeroconf for mDNS discovery
 
-MQTT Scout RN discovers MQTT brokers via Bonjour/mDNS on iOS and Android. The Capacitor sibling uses `@mhaberler/capacitor-zeroconf-nsd`, which we own and already ship in production. For the React Native port we chose the community package **`react-native-zeroconf`** (v0.14.x) instead of wrapping our Capacitor plugin or adopting newer RN-specific libraries.
+MQTT Scout RN discovers MQTT brokers via Bonjour/mDNS. Platform backends differ:
 
-On **Android**, scans use the **DNSSD** backend (embedded mDNSResponder), not Android `NsdManager` (NSD). On **iOS**, the library uses Bonjour / NetService. Discovery requires an Expo dev build (prebuild); it does not run in Expo Go.
+| Platform | Backend |
+|----------|---------|
+| **iOS** | `react-native-zeroconf` v0.14.x — Bonjour / NetService |
+| **Android** | Local Expo module [`mqtt-zeroconf-nsd`](../../modules/mqtt-zeroconf-nsd/) — `NsdManager` (Capacitor parity). See [0003-android-nsdmanager-module.md](./0003-android-nsdmanager-module.md). |
 
-## Considered options
+Discovery requires an Expo dev build (prebuild); it does not run in Expo Go.
 
-| Option | Why not |
-|--------|---------|
-| **Expo module wrapping `@mhaberler/capacitor-zeroconf-nsd`** | Best API parity with the Vue app, but upfront module work before any UI ships. Deferred unless community libraries fail on real devices. |
-| **`@inthepocket/react-native-service-discovery`** | Clean Turbo Module API and close `Service` shape to our Capacitor plugin (including TXT records). Android is **NSD only** — no DNSSD — so it conflicts with the Android 15+ / cross-device reliability goal. |
-| **`@dawidzawada/bonjour-zeroconf`** | Modern Nitro Modules stack and built-in iOS local-network permission helpers. **`ScanResult` has no TXT record**, which breaks WebSocket path resolution (`txt.path` defaults to `/mqtt` in our MQTT client). Snapshot-based results, not per-service events. Small install base. |
+## Considered options (original Android — superseded for Android)
 
-## Why react-native-zeroconf
+| Option | Why not (Android) |
+|--------|-------------------|
+| **Embedded DNSSD via patched react-native-zeroconf** | SIGSEGV on Samsung S928B; heavy patch maintenance. **Removed** — see ADR 0003. |
+| **`@inthepocket/react-native-service-discovery`** | NSD-only Turbo Module; no iOS Bonjour parity with our adapter. |
+| **`@dawidzawada/bonjour-zeroconf`** | No TXT in scan results. |
 
-1. **Android DNSSD** — only evaluated option with an embedded mDNSResponder path; documented 16KB page alignment for Google Play (Android 15+).
-2. **TXT records** — needed for `buildConnectUrl` (`broker.txtRecord?.path || '/mqtt'`).
-3. **WS + WSS coverage** — the library exposes one native browse at a time (iOS `NSNetServiceBrowser`, Android DNSSD). We **rotate** `_mqtt-ws` and `_mqtt-wss` scans on an 8s interval instead of starting both back-to-back, which previously dropped slow LAN advertisers (e.g. ESP32 Sensorpod).
-4. **Install base** — ~30k weekly npm downloads vs hundreds for alternatives; long project history with recent maintenance (0.14.0, Dec 2025).
+## Why react-native-zeroconf (iOS)
+
+1. **TXT records** — `buildConnectUrl` uses `txt.path` (default `/mqtt`).
+2. **Bonjour** — platform-native on iOS; `NSBonjourServices` + local network permission.
+3. **WS + WSS** — rotate `_mqtt-ws` and `_mqtt-wss` scans on an 8s interval (one browse at a time on iOS).
+
+## Why mqtt-zeroconf-nsd (Android)
+
+1. **Production-proven** on same devices as Capacitor sibling (`@mhaberler/capacitor-zeroconf-nsd`).
+2. **No embedded .so** — framework `NsdManager` only; avoids DNSSD crash class.
+3. **Capacitor parity** — parallel `_mqtt-ws` + `_mqtt-wss` watches; hard refresh on pull-to-refresh.
 
 ## Consequences
 
-- Write a thin **adapter** mapping `found` / `resolved` / `remove` events to our existing `ServiceEntry` model (Capacitor uses `added` / `resolved` / `removed`; we already treat `removed` as unreliable and clear on Refresh).
-- Configure **iOS** `NSBonjourServices` and `NSLocalNetworkUsageDescription`; request multicast entitlement for App Store.
-- Configure **Android** multicast / nearby-WiFi permissions and `usesCleartextTraffic` for LAN brokers (same as Capacitor).
-- Always pass `'DNSSD'` as the Android implementation on `scan()` / `stop()` — do not use default NSD.
-- **`postinstall` patch:** Android hotspot / dual-homed discovery requires our dual-DNSSD patch under `patches/react-native-zeroconf/` (applied by `scripts/apply-zeroconf-patch.sh`). Rebuild the dev client after install.
-- If DNSSD or event semantics fail on target devices (Galaxy S24/S10/A15, iPhone), reassess — first fallback is wrapping our Capacitor native code, not switching to NSD-only libraries.
-- **Hotspot / dual-homed:** When the phone's hotspot AP is on, a second interface-bound DNSSD browse on the AP interface supplements upstream browse — see [0002-hybrid-android-discovery.md](./0002-hybrid-android-discovery.md).
+- Thin **adapter** ([`src/lib/zeroconf-adapter.ts`](../../src/lib/zeroconf-adapter.ts)) maps discovery events to `ServiceEntry`.
+- **iOS:** `NSBonjourServices`, `NSLocalNetworkUsageDescription`, multicast entitlement.
+- **Android:** Wi‑Fi multicast permissions (already in `app.json`); `react-native-zeroconf` excluded from Android autolinking via [`react-native.config.js`](../../react-native.config.js).
+- Rebuild dev client after adding/updating `mqtt-zeroconf-nsd`.
+- Dual-homed DNSSD design ([0002](./0002-hybrid-android-discovery.md)) **superseded on Android** by ADR 0003.

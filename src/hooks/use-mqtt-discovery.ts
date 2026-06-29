@@ -1,18 +1,11 @@
-import { AppState, Platform } from 'react-native';
+import { AppState } from 'react-native';
 
 import { discoveredBrokerKey } from '@/lib/discovered-broker-key';
-import {
-  restartDiscoveryModeScan,
-  subscribeDiscoveryModeChanges,
-  useDiscoveryMode,
-} from '@/lib/discovery-mode';
 import { createExternalStore } from '@/lib/external-store';
 import {
-  canSoftRefreshDiscovery,
-  restartAllBrokerScans,
   serviceEntryKey,
-  softRefreshBrokerDiscovery,
   startAllBrokerScans,
+  startAllBrokerScansAsync,
   stopAllZeroconfScans,
   subscribeZeroconf,
 } from '@/lib/zeroconf-adapter';
@@ -22,7 +15,6 @@ const discoveredStore = createExternalStore<Record<string, ServiceEntry>>({});
 let isWatching = false;
 let lifecycleRegistered = false;
 let zeroconfSubscribed = false;
-let discoveryModeHandlerRegistered = false;
 
 function onServiceEvent(action: 'added' | 'removed' | 'resolved', service: ServiceEntry) {
   const key = discoveredBrokerKey(service);
@@ -87,24 +79,19 @@ export function startScan() {
 export function stopScan() {
   if (!isWatching) return;
   isWatching = false;
-  stopAllZeroconfScans();
+  void stopAllZeroconfScans();
 }
 
 export async function refreshDiscovery() {
-  if (canSoftRefreshDiscovery()) {
-    softRefreshBrokerDiscovery();
-    return;
+  const wasWatching = isWatching;
+  if (wasWatching) {
+    isWatching = false;
+    await stopAllZeroconfScans();
   }
-
   discoveredStore.setState({});
-  if (isWatching) {
-    if (Platform.OS === 'android') {
-      restartDiscoveryModeScan();
-    } else {
-      restartAllBrokerScans();
-    }
-  } else {
-    startScan();
+  if (wasWatching) {
+    isWatching = true;
+    await startAllBrokerScansAsync();
   }
 }
 
@@ -146,19 +133,11 @@ function ensureZeroconfSubscription() {
   });
 }
 
-function ensureDiscoveryModeHandler() {
-  if (discoveryModeHandlerRegistered || Platform.OS !== 'android') return;
-  discoveryModeHandlerRegistered = true;
-  subscribeDiscoveryModeChanges(() => {});
-}
-
 export function useMqttDiscovery() {
   ensureZeroconfSubscription();
-  ensureDiscoveryModeHandler();
   registerLifecycle();
 
   const discoveredBrokers = discoveredStore.useStore();
-  const discoveryMode = useDiscoveryMode();
 
   return {
     discoveredBrokers,
@@ -166,7 +145,6 @@ export function useMqttDiscovery() {
     refresh: refreshDiscovery,
     startScan,
     stopScan,
-    discoveryMode,
   };
 }
 

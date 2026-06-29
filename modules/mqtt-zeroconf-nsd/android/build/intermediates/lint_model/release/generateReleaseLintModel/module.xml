@@ -1,0 +1,18 @@
+<lint-module
+    format="1"
+    dir="/Users/mah/Ballon/src/BalloonWare/react-native-expo/rn-mdns-mqtt/modules/mqtt-zeroconf-nsd/android"
+    name=":mqtt-zeroconf-nsd"
+    type="LIBRARY"
+    maven="expo.modules.mqttzeroconfnsd:mqtt-zeroconf-nsd:1.0.0"
+    agpVersion="8.12.0"
+    buildFolder="build"
+    bootClassPath="/Users/mah/Library/Android/sdk/platforms/android-36/android.jar:/Users/mah/Library/Android/sdk/build-tools/35.0.0/core-lambda-stubs.jar"
+    javaSourceLevel="17"
+    compileTarget="android-36"
+    neverShrinking="true">
+  <lintOptions
+      absolutePaths="true"
+      checkReleaseBuilds="true"
+      explainIssues="true"/>
+  <variant name="release"/>
+</lint-module>

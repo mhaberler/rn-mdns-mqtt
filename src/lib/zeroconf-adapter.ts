@@ -1,13 +1,14 @@
 import { Platform } from 'react-native';
 import Zeroconf, { type Service } from 'react-native-zeroconf';
+import {
+  addServiceListener,
+  closeDiscovery,
+  unwatchService,
+  watchService,
+} from 'mqtt-zeroconf-nsd';
 
 import { pickConnectHost } from '@/lib/broker-host';
 import { hasDevClientNativeModules } from '@/lib/native-modules';
-import { notifyDiscoveryScanActive } from '@/lib/discovery-mode';
-import {
-  restartNativeDiscoveryScan,
-  stopNativeDiscoveryWatching,
-} from '@/lib/zeroconf-native';
 
 import type { ServiceEntry } from '@/types/broker';
 import {
@@ -27,22 +28,24 @@ export type ZeroconfDiscoveryEvent = {
 type DiscoveryListener = (event: ZeroconfDiscoveryEvent) => void;
 type BrokerServiceType = (typeof BROKER_SERVICE_TYPES)[number];
 
-const ANDROID_IMPL = 'DNSSD';
 const DOMAIN = 'local.';
+const ANDROID_SCAN_TYPES: readonly BrokerServiceType[] = [
+  BROKER_SERVICE_TYPES[0],
+  BROKER_SERVICE_TYPES[1],
+];
+const IOS_SCAN_TYPES: readonly BrokerServiceType[] = BROKER_SERVICE_TYPES;
 const PLATFORM_SCAN_TYPES: readonly BrokerServiceType[] =
-  Platform.OS === 'android' ? [BROKER_SERVICE_TYPES[0]] : BROKER_SERVICE_TYPES;
-const ROTATE_SCAN_TYPES = PLATFORM_SCAN_TYPES.length > 1;
+  Platform.OS === 'android' ? ANDROID_SCAN_TYPES : IOS_SCAN_TYPES;
+const ROTATE_SCAN_TYPES = Platform.OS === 'ios' && PLATFORM_SCAN_TYPES.length > 1;
 const INITIAL_WS_SLICE_MS = 15_000;
 const SCAN_SLICE_MS = 8_000;
 const IOS_NATIVE_SETTLE_MS = 400;
-
-type ServiceWithBrowseKey = Service & { browseKey?: string };
+const USE_ANDROID_NSD = Platform.OS === 'android';
 
 let zeroconf: Zeroconf | null = null;
 const activeTypes = new Set<string>();
 const listeners = new Set<DiscoveryListener>();
 const knownServiceTypes = new Map<string, string>();
-const knownBrowseKeys = new Map<string, string>();
 let wired = false;
 let rotationTimer: ReturnType<typeof setInterval> | null = null;
 let initialScanTimer: ReturnType<typeof setTimeout> | null = null;
@@ -51,9 +54,10 @@ let rotationIndex = 0;
 let scanGeneration = 0;
 let scanSessionActive = false;
 let currentScanType: BrokerServiceType | null = null;
+let androidServiceSubscription: { remove: () => void } | null = null;
 
 function getZeroconf(): Zeroconf | null {
-  if (!hasDevClientNativeModules()) return null;
+  if (!hasDevClientNativeModules() || USE_ANDROID_NSD) return null;
   if (!zeroconf) {
     zeroconf = new Zeroconf();
   }
@@ -70,39 +74,73 @@ function splitAddresses(addresses: string[] | undefined): { ipv4: string[]; ipv6
   return { ipv4, ipv6 };
 }
 
-function mapService(
-  service: ServiceWithBrowseKey,
+function mapServiceEntry(
+  input: {
+    name?: string;
+    type?: string;
+    host?: string;
+    port?: number;
+    domain?: string;
+    txtRecord?: Record<string, string>;
+    ipv4Addresses?: string[];
+    ipv6Addresses?: string[];
+    addresses?: string[];
+  },
   action: ZeroconfDiscoveryAction,
   fallbackType?: string,
 ): ServiceEntry | null {
   const type =
     fallbackType ??
-    serviceTypeFromFullName(service.fullName ?? '') ??
-    (service.fullName?.includes('_mqtt-wss._tcp') ? '_mqtt-wss._tcp.' : '_mqtt-ws._tcp.');
-
-  const host = service.host || service.addresses?.[0] || 'Unknown';
-  const { ipv4, ipv6 } = splitAddresses(service.addresses);
-  const port = service.port ?? 0;
+    (input.type && input.type.includes('._tcp') ? input.type : null) ??
+    serviceTypeFromFullName(input.name ?? '') ??
+    '_mqtt-ws._tcp.';
+  const host =
+    input.host ||
+    input.ipv4Addresses?.[0] ||
+    input.ipv6Addresses?.[0] ||
+    input.addresses?.[0] ||
+    'Unknown';
+  const ipv4 = input.ipv4Addresses ?? splitAddresses(input.addresses).ipv4;
+  const ipv6 = input.ipv6Addresses ?? splitAddresses(input.addresses).ipv6;
+  const port = input.port ?? 0;
   const connectHost = pickConnectHost({ host, ipv4Addresses: ipv4, ipv6Addresses: ipv6 });
 
   return {
-    name: service.name || `${type} Service`,
+    name: input.name || `${type} Service`,
     type,
     host: connectHost,
     port: port > 0 ? port : 0,
-    domain: 'local',
+    domain: input.domain?.replace(/\.$/, '') || 'local',
     discovered: true,
     resolved: action === 'resolved' && port > 0,
     source: 'discovered',
-    txtRecord: service.txt ?? {},
+    txtRecord: input.txtRecord ?? {},
     ipv4Addresses: ipv4,
     ipv6Addresses: ipv6,
   };
 }
 
-function rememberServiceType(name: string, type: string, browseKey?: string) {
+function mapIosService(
+  service: Service,
+  action: ZeroconfDiscoveryAction,
+  fallbackType?: string,
+): ServiceEntry | null {
+  return mapServiceEntry(
+    {
+      name: service.name,
+      type: fallbackType,
+      host: service.host,
+      port: service.port,
+      txtRecord: service.txt,
+      addresses: service.addresses,
+    },
+    action,
+    fallbackType,
+  );
+}
+
+function rememberServiceType(name: string, type: string) {
   knownServiceTypes.set(name, type);
-  if (browseKey) knownBrowseKeys.set(name, browseKey);
 }
 
 function emit(event: ZeroconfDiscoveryEvent) {
@@ -130,23 +168,41 @@ function invalidateScanSession() {
   clearScanTimers();
   activeTypes.clear();
   knownServiceTypes.clear();
-  knownBrowseKeys.clear();
   currentScanType = null;
   rotationIndex = 0;
 }
 
-function stopNativeScan() {
+async function stopNativeScan(): Promise<void> {
   if (!hasDevClientNativeModules()) return;
-  if (Platform.OS === 'android') {
-    stopNativeDiscoveryWatching();
+
+  if (USE_ANDROID_NSD) {
+    await stopAndroidScans();
     return;
   }
+
   if (!zeroconf) return;
   try {
-    zeroconf.stop(ANDROID_IMPL);
+    zeroconf.stop();
   } catch {
     /* stop while native browse is tearing down */
   }
+}
+
+async function stopAndroidScans() {
+  for (const serviceType of ANDROID_SCAN_TYPES) {
+    try {
+      await unwatchService(serviceType, DOMAIN);
+    } catch {
+      /* ignore unwatch while tearing down */
+    }
+  }
+  try {
+    await closeDiscovery();
+  } catch {
+    /* ignore close while tearing down */
+  }
+  androidServiceSubscription?.remove();
+  androidServiceSubscription = null;
 }
 
 function scanServiceType(serviceType: BrokerServiceType) {
@@ -156,7 +212,7 @@ function scanServiceType(serviceType: BrokerServiceType) {
   currentScanType = serviceType;
   const { type, protocol } = toScanParts(serviceType);
   try {
-    z.scan(type, protocol, DOMAIN, ANDROID_IMPL);
+    z.scan(type, protocol, DOMAIN);
   } catch {
     scanSessionActive = false;
   }
@@ -178,19 +234,57 @@ function republishCachedServices() {
 
   for (const [name, raw] of Object.entries(z.getServices())) {
     const fallbackType = knownServiceTypes.get(name) ?? PLATFORM_SCAN_TYPES[0];
-    const withKey = raw as ServiceWithBrowseKey;
-    if (knownBrowseKeys.has(name)) {
-      withKey.browseKey = knownBrowseKeys.get(name);
-    }
-    const mapped = mapService(withKey, 'resolved', fallbackType);
+    const mapped = mapIosService(raw, 'resolved', fallbackType);
     if (!mapped || mapped.port <= 0) continue;
-    rememberServiceType(mapped.name, mapped.type, withKey.browseKey);
+    rememberServiceType(mapped.name, mapped.type);
     emit({ action: 'resolved', service: mapped });
   }
 }
 
-function armScanSession() {
+function wireAndroidEvents() {
+  if (androidServiceSubscription) return;
+
+  androidServiceSubscription = addServiceListener(({ action, service }) => {
+    const mapped = mapServiceEntry(
+      {
+        name: service.name,
+        type: service.type,
+        host: service.hostname,
+        port: service.port,
+        domain: service.domain,
+        txtRecord: service.txtRecord,
+        ipv4Addresses: service.ipv4Addresses,
+        ipv6Addresses: service.ipv6Addresses,
+      },
+      action,
+      service.type,
+    );
+    if (!mapped) return;
+    rememberServiceType(mapped.name, mapped.type);
+    emit({ action, service: mapped });
+  });
+}
+
+async function startAndroidScans() {
+  wireAndroidEvents();
+  await Promise.all(
+    ANDROID_SCAN_TYPES.map((serviceType) => watchService(serviceType, DOMAIN)),
+  );
+}
+
+async function armScanSession(): Promise<void> {
   if (!hasDevClientNativeModules()) return;
+
+  if (USE_ANDROID_NSD) {
+    scanSessionActive = true;
+    try {
+      await startAndroidScans();
+    } catch (err) {
+      console.warn('[zeroconf-nsd]', err);
+      scanSessionActive = false;
+    }
+    return;
+  }
 
   const generation = scanGeneration;
   activeTypes.clear();
@@ -221,15 +315,17 @@ function scheduleNativeRestart(settleMs: number) {
     pendingRestartTimer = null;
     if (!hasDevClientNativeModules()) return;
 
-    stopNativeScan();
-    setTimeout(() => {
-      if (!hasDevClientNativeModules()) return;
-      armScanSession();
-    }, settleMs);
+    void (async () => {
+      await stopNativeScan();
+      setTimeout(() => {
+        if (!hasDevClientNativeModules()) return;
+        void armScanSession();
+      }, settleMs);
+    })();
   }, settleMs);
 }
 
-function wireEvents() {
+function wireIosEvents() {
   if (wired) return;
   const z = getZeroconf();
   if (!z) return;
@@ -240,28 +336,26 @@ function wireEvents() {
   });
 
   z.on('found', (name: string) => {
-    const raw = z.getServices()[name] as ServiceWithBrowseKey | undefined;
+    const raw = z.getServices()[name];
     if (!raw) return;
-    const mapped = mapService(raw, 'added', currentScanType ?? undefined);
+    const mapped = mapIosService(raw, 'added', currentScanType ?? undefined);
     if (!mapped) return;
-    rememberServiceType(mapped.name, mapped.type, raw.browseKey);
+    rememberServiceType(mapped.name, mapped.type);
     emit({ action: 'added', service: mapped });
   });
 
-  z.on('resolved', (service: ServiceWithBrowseKey) => {
-    const mapped = mapService(service, 'resolved', currentScanType ?? undefined);
+  z.on('resolved', (service: Service) => {
+    const mapped = mapIosService(service, 'resolved', currentScanType ?? undefined);
     if (!mapped) return;
-    rememberServiceType(mapped.name, mapped.type, service.browseKey);
+    rememberServiceType(mapped.name, mapped.type);
     emit({ action: 'resolved', service: mapped });
   });
 
   z.on('remove', (name: string) => {
-    const raw = z.getServices()[name] as ServiceWithBrowseKey | undefined;
+    const raw = z.getServices()[name];
     const fallbackType =
       knownServiceTypes.get(name) ?? currentScanType ?? '_mqtt-ws._tcp.';
-    const browseKey = knownBrowseKeys.get(name);
     knownServiceTypes.delete(name);
-    knownBrowseKeys.delete(name);
 
     if (!raw) {
       emit({
@@ -279,9 +373,17 @@ function wireEvents() {
       return;
     }
 
-    const mapped = mapService(raw, 'removed', fallbackType);
+    const mapped = mapIosService(raw, 'removed', fallbackType);
     if (mapped) emit({ action: 'removed', service: mapped });
   });
+}
+
+function wireEvents() {
+  if (USE_ANDROID_NSD) {
+    wireAndroidEvents();
+    return;
+  }
+  wireIosEvents();
 }
 
 export function subscribeZeroconf(listener: DiscoveryListener): () => void {
@@ -293,36 +395,31 @@ export function subscribeZeroconf(listener: DiscoveryListener): () => void {
 export function startAllBrokerScans() {
   wireEvents();
   if (scanSessionActive) return;
-  notifyDiscoveryScanActive(true);
-  armScanSession();
+  void armScanSession();
+}
+
+export async function startAllBrokerScansAsync() {
+  wireEvents();
+  if (scanSessionActive) return;
+  await armScanSession();
 }
 
 export function softRefreshBrokerDiscovery() {
+  if (USE_ANDROID_NSD) return;
   wireEvents();
   republishCachedServices();
 }
 
-export function restartAllBrokerScans() {
+export async function restartAllBrokerScans() {
   wireEvents();
-  if (Platform.OS === 'android') {
-    restartNativeDiscoveryScan();
-    republishCachedServices();
-    return;
-  }
-
-  scanGeneration += 1;
-  scanSessionActive = false;
-  clearScanTimers();
-  stopNativeScan();
-  scheduleNativeRestart(IOS_NATIVE_SETTLE_MS);
+  invalidateScanSession();
+  await stopNativeScan();
+  await armScanSession();
 }
 
-export function stopAllZeroconfScans() {
+export async function stopAllZeroconfScans() {
   invalidateScanSession();
-  stopNativeScan();
-  if (Platform.OS === 'android') {
-    notifyDiscoveryScanActive(false);
-  }
+  await stopNativeScan();
 }
 
 export function serviceEntryKey(service: ServiceEntry): string {
@@ -331,7 +428,7 @@ export function serviceEntryKey(service: ServiceEntry): string {
 }
 
 export function canSoftRefreshDiscovery(): boolean {
-  return Platform.OS === 'android' && scanSessionActive;
+  return !USE_ANDROID_NSD && scanSessionActive;
 }
 
 /** @deprecated Use startAllBrokerScans */

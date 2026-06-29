@@ -1,5 +1,7 @@
 # Dual DNSSD Android discovery
 
+**Status: Superseded on Android by [0003-android-nsdmanager-module.md](./0003-android-nsdmanager-module.md).** Kept for historical context on the dual-DNSSD spike and patch design.
+
 When an Android phone shares a **hotspot AP**, mDNS on connected IoT devices is link-local to the AP interface (`swlan0`, `ap0`, etc.). A single DNSSD browse bound to upstream WiFi (`wlan0`) or `ALL_INTERFACES` misses hotspot-segment brokers.
 
 When the phone is also a **WiFi client** (dual-homed), one browse leg only reliably sees upstream LAN brokers unless a second leg binds to the AP interface.

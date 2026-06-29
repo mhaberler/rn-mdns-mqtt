@@ -30,16 +30,16 @@ Scanner tab + MQTT Client tab only. Hosts tab deferred to v1.1.
 Includes full Scanner features except auto-connect and background pause/resume (deferred to v1.1).
 _Avoid_: MVP (too vague), full parity
 
-**mDNS library**:
-`react-native-zeroconf` (community npm package). Requires Expo dev build / prebuild — not Expo Go.
-_Avoid_: Capacitor zeroconf plugin, custom Expo module (deferred unless library fails)
-
 **Android mDNS backend**:
-Patched `react-native-zeroconf` with embedded mDNSResponder (DNSSD). Upstream WiFi uses interface-bound or `ALL_INTERFACES` browse. When hotspot AP is on, a second DNSSD browse binds to the AP interface (`swlan0` / etc.) via `NetworkDiscoveryManager`. Dual-homed runs both browses in parallel; resolves tagged `browseKey` → `discoverySegment`. Patch applied on `postinstall` (`patches/react-native-zeroconf/`).
-_Avoid_: Replacing DNSSD with NSD globally; Capacitor NSD-only default; Expo Go (dev client required)
+Local Expo module `mqtt-zeroconf-nsd` using Android `NsdManager` — same approach as Capacitor sibling. Parallel `_mqtt-ws._tcp` and `_mqtt-wss._tcp` watches; flat discovered broker list (no upstream/hotspot UI split).
+_Avoid_: Embedded DNSSD patch; dual interface-bound browses on Android
 
-**Discovery segment**:
-Which L2 multicast domain a discovered broker was found on: **upstream WiFi** or **hotspot**. Distinct from **Broker source** (`discovered` / `manual` / `preconfigured`).
+**iOS mDNS backend**:
+Bonjour / NetService via `react-native-zeroconf`.
+_Avoid_: Replacing iOS Bonjour with NsdManager
+
+**Discovery segment** (deprecated on Android):
+Which L2 multicast domain a broker was found on: **upstream WiFi** or **hotspot**. Android uses a flat list like Capacitor; segment tagging is not used in v1 RN.
 _Avoid_: Network, interface (in user-facing copy)
 
 **Upstream WiFi segment**:
@@ -50,8 +50,12 @@ _Avoid_: External WiFi, primary network
 Brokers on devices connected to the phone's hotspot/AP.
 _Avoid_: Tether network, AP clients
 
-**iOS mDNS backend**:
-Bonjour / NetService (platform default via `react-native-zeroconf`).
+**mDNS library (iOS)**:
+`react-native-zeroconf` (community npm package). Requires Expo dev build / prebuild — not Expo Go.
+
+**mDNS module (Android)**:
+`mqtt-zeroconf-nsd` local Expo module. Requires Expo dev build / prebuild — not Expo Go.
+_Avoid_: Capacitor plugin in RN runtime; Expo Go
 
 **MQTT client**:
 `mqtt` v5 (mqtt.js) over WebSocket — same library and connection logic as Capacitor app.

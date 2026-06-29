@@ -8,7 +8,7 @@ Forked from Capacitor `mdns-mqtt-vue3` store pack — update URLs and screenshot
 
 ### App Review Notes
 
-MQTT Scout RN is a developer/IoT utility for discovering MQTT brokers via Bonjour/mDNS and publishing/subscribing over MQTT. Native discovery uses NetService (iOS) and embedded mDNSResponder DNSSD (Android) via patched `react-native-zeroconf` — not a website wrapper. On Android, when the phone's hotspot AP is on, a second DNSSD browse on the AP interface lists hotspot-segment brokers under **Hotspot**. When WiFi client and hotspot are both active, upstream brokers appear under **Upstream WiFi**.
+MQTT Scout RN is a developer/IoT utility for discovering MQTT brokers via Bonjour/mDNS and publishing/subscribing over MQTT. Native discovery uses NetService (iOS) and Android `NsdManager` via local Expo module `mqtt-zeroconf-nsd` (Capacitor parity) — not a website wrapper. Discovered brokers appear in a single flat list on Android; iOS uses the same list with time-sliced WS/WSS Bonjour scans.
 
 How to test:
 
@@ -43,20 +43,8 @@ Privacy policy: `PRIVACY.md` in this repo.
 - [ ] Signed AAB via `eas build` or local Gradle release
 - [ ] Bump `versionCode` each upload
 - [ ] Privacy Policy URL in Play listing
-- [ ] Test DNSSD discovery on physical Android (Galaxy, etc.) — dev client `com.haberlerm.rnmqttmdns`, not Expo Go
-- [ ] Run `npm install` (applies dual-DNSSD zeroconf patch) before release build
-- [ ] Test hotspot-only Android: enable phone hotspot, connect IoT device (no upstream WiFi) — **Hotspot** subsection shows broker (may take ~20s on Samsung AP)
-- [ ] Test dual-homed Android: WiFi client + hotspot — both Upstream WiFi and Hotspot subsections; hotspot clears when tethering off
-- [ ] **Samsung BackToHome off** during discovery tests (see below)
-
-### Samsung BackToHome (known quirk)
-
-Samsung **BackToHome** (remote access / mesh leg on `192.168.216.x`) can break **upstream** mDNS on dual-homed phones:
-
-- `NetworkDiscovery` reports upstream CIDR like `192.168.216.4/32` (host-only prefix)
-- Subnet filter then drops every LAN broker; browse may run but **Upstream WiFi** stays empty
-- WiFi capability churn can also restart browse repeatedly while BackToHome is active
-
-**For testing and support:** disable BackToHome, confirm normal upstream CIDR (e.g. `/24`), then rescan. Hotspot leg is unaffected.
-
-Observed on Galaxy S928B (SM-S928B), Android 15, dual-homed DNSSD patch.
+- [ ] Test NsdManager discovery on physical Android (Galaxy, etc.) — dev client `com.haberlerm.rnmqttmdns`, not Expo Go
+- [ ] Rebuild after `npm install` (links `mqtt-zeroconf-nsd` Expo module)
+- [ ] Test dual-homed Android: WiFi client + hotspot — flat list shows upstream LAN and hotspot AP brokers
+- [ ] Test refresh: list clears and repopulates
+- [ ] Confirm no `DNS-SDEmbedded` / embedded DNSSD in release logcat

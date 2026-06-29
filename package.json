@@ -30,7 +30,8 @@
     "react-native-screens": "4.25.2",
     "react-native-web": "~0.21.0",
     "react-native-worklets": "0.8.3",
-    "react-native-zeroconf": "^0.14.0"
+    "react-native-zeroconf": "^0.14.0",
+    "mqtt-zeroconf-nsd": "file:./modules/mqtt-zeroconf-nsd"
   },
   "devDependencies": {
     "@types/react": "~19.2.2",
@@ -47,8 +48,7 @@
     "ios-device": "expo run:ios --device",
     "ios-device-release": "expo run:ios --device --configuration Release",
     "web": "expo start --web",
-    "lint": "expo lint",
-    "postinstall": "sh scripts/apply-zeroconf-patch.sh"
+    "lint": "expo lint"
   },
   "private": true
 }
