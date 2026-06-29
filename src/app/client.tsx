@@ -25,10 +25,14 @@ export default function ClientScreen() {
     if (!broker) return;
     mqttConn.clearMessages();
     mqttConn.addMessage('system', `Configured for ${broker.name}`);
-    if (mqttConn.connectionState === 'disconnected') {
+    if (
+      mqttConn.connectionState === 'disconnected' &&
+      !mqttConn.isTrying &&
+      !mqttConn.isTestInFlight
+    ) {
       mqttConn.connect(broker);
     }
-  }, [broker?.name, broker?.host, broker?.port]);
+  }, [broker?.name, broker?.host, broker?.port, broker?.type]);
 
   if (!broker) {
     return (

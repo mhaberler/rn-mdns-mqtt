@@ -1,4 +1,4 @@
-package expo.modules.mqttzeroconfnsd
+package expo.modules.zeroconfnsd
 
 import android.content.Context
 import android.net.nsd.NsdManager
@@ -14,7 +14,7 @@ typealias ServiceEventHandler = (action: String, service: Map<String, Any?>) -> 
 
 class NsdDiscoveryEngine(private val context: Context) {
   companion object {
-    private const val TAG = "MqttZeroconfNsd"
+    private const val TAG = "ZeroconfNsd"
   }
 
   private val mainHandler = Handler(Looper.getMainLooper())
@@ -26,6 +26,18 @@ class NsdDiscoveryEngine(private val context: Context) {
 
   fun setEventHandler(handler: ServiceEventHandler?) {
     eventHandler = handler
+  }
+
+  fun watchAll(types: List<String>, domain: String) {
+    for (type in types) {
+      watch(type, domain)
+    }
+  }
+
+  fun unwatchAll(types: List<String>, domain: String) {
+    for (type in types) {
+      unwatch(type, domain)
+    }
   }
 
   fun watch(type: String, domain: String) {
@@ -135,7 +147,7 @@ class NsdDiscoveryEngine(private val context: Context) {
     @Suppress("WifiManagerLeak")
     val wifi = context.getSystemService(Context.WIFI_SERVICE) as WifiManager
     multicastLock =
-        wifi.createMulticastLock("MqttZeroconfNsdLock").apply {
+        wifi.createMulticastLock("ZeroconfNsdLock").apply {
           setReferenceCounted(false)
           acquire()
         }

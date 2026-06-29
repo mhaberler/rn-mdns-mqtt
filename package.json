@@ -28,17 +28,24 @@
     "react-native-reanimated": "4.3.1",
     "react-native-safe-area-context": "~5.7.0",
     "react-native-screens": "4.25.2",
+    "react-native-tcp-socket": "^6.4.1",
     "react-native-web": "~0.21.0",
     "react-native-worklets": "0.8.3",
     "react-native-zeroconf": "^0.14.0",
-    "mqtt-zeroconf-nsd": "file:./modules/mqtt-zeroconf-nsd"
+    "zeroconf-nsd": "file:./modules/zeroconf-nsd"
   },
   "devDependencies": {
     "@types/react": "~19.2.2",
     "@types/react-native-zeroconf": "^0.13.1",
+    "patch-package": "^8.0.0",
     "typescript": "~6.0.3"
   },
+  "react-native": {
+    "net": "react-native-tcp-socket",
+    "tls": "react-native-tcp-socket"
+  },
   "scripts": {
+    "postinstall": "patch-package",
     "start": "expo start",
     "reset-project": "node ./scripts/reset-project.js",
     "android": "expo run:android",
@@ -48,6 +55,7 @@
     "ios": "expo run:ios",
     "ios-device": "expo run:ios --device",
     "ios-device-release": "expo run:ios --device --configuration Release",
+    "ios-device-debug": "expo run:ios --device --configuration Debug",
     "web": "expo start --web",
     "lint": "expo lint"
   },

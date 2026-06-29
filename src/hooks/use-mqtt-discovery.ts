@@ -1,5 +1,6 @@
 import { AppState } from 'react-native';
 
+import { mergeAddressLists, pickConnectHost } from '@/lib/broker-host';
 import { discoveredBrokerKey } from '@/lib/discovered-broker-key';
 import { createExternalStore } from '@/lib/external-store';
 import {
@@ -48,6 +49,13 @@ function onServiceEvent(action: 'added' | 'removed' | 'resolved', service: Servi
   if (action === 'resolved' && service.port > 0) {
     discoveredStore.setState((current) => {
       const existing = current[key];
+      const ipv4Addresses = mergeAddressLists(existing?.ipv4Addresses, service.ipv4Addresses);
+      const ipv6Addresses = mergeAddressLists(existing?.ipv6Addresses, service.ipv6Addresses);
+      const host = pickConnectHost({
+        host: service.host || existing?.host,
+        ipv4Addresses,
+        ipv6Addresses,
+      });
       return {
         ...current,
         [key]: {
@@ -55,15 +63,15 @@ function onServiceEvent(action: 'added' | 'removed' | 'resolved', service: Servi
           ...service,
           name: service.name || existing?.name || `${service.type ?? 'service'} Service`,
           type: service.type || existing?.type || '',
-          host: service.host || existing?.host || 'Unknown',
+          host,
           port: service.port,
           domain: service.domain || existing?.domain,
           discovered: true,
           resolved: true,
           source: 'discovered',
           txtRecord: service.txtRecord || existing?.txtRecord || {},
-          ipv4Addresses: service.ipv4Addresses || existing?.ipv4Addresses || [],
-          ipv6Addresses: service.ipv6Addresses || existing?.ipv6Addresses || [],
+          ipv4Addresses,
+          ipv6Addresses,
         },
       };
     });

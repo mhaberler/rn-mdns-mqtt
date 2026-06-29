@@ -1,0 +1,272 @@
+diff --git a/node_modules/mqtt/build/lib/BufferedDuplex.js b/node_modules/mqtt/build/lib/BufferedDuplex.js
+index e10b5b2..1271740 100644
+--- a/node_modules/mqtt/build/lib/BufferedDuplex.js
++++ b/node_modules/mqtt/build/lib/BufferedDuplex.js
+@@ -33,7 +33,7 @@ class BufferedDuplex extends readable_stream_1.Duplex {
+         }
+         this.isSocketOpen = false;
+         this.proxy.on('data', (chunk) => {
+-            if (!this.destroyed && this.readable) {
++            if (!this.destroyed && !this._writableState.ended) {
+                 this.push(chunk);
+             }
+         });
+diff --git a/node_modules/mqtt/build/lib/client.js b/node_modules/mqtt/build/lib/client.js
+index 6660b24..e46c6c1 100644
+--- a/node_modules/mqtt/build/lib/client.js
++++ b/node_modules/mqtt/build/lib/client.js
+@@ -69,6 +69,37 @@ const defaultConnectOptions = {
+     writeCache: true,
+     timerVariant: 'auto',
+ };
++function polypipe(readable, writable) {
++    const pending = [];
++    let active = !(readable.pending || readable.connecting);
++    const flushPending = () => {
++        active = true;
++        for (let i = 0; i < pending.length; i++) {
++            writable.write(pending[i]);
++        }
++        pending.length = 0;
++    };
++    readable.on('data', (chunk) => {
++        if (!active) {
++            pending.push(chunk);
++            return;
++        }
++        writable.write(chunk);
++    });
++    if (active) {
++        flushPending();
++    }
++    else {
++        readable.once('connect', () => {
++            (0, shared_1.nextTick)(flushPending);
++        });
++    }
++    readable.on('end', () => {
++        if (typeof writable.end === 'function') {
++            writable.end();
++        }
++    });
++}
+ class MqttClient extends TypedEmitter_1.TypedEventEmitter {
+     static VERSION = shared_1.MQTTJS_VERSION;
+     connected;
+@@ -302,7 +333,12 @@ class MqttClient extends TypedEmitter_1.TypedEventEmitter {
+             }
+         };
+         this.log('connect :: pipe stream to writable stream');
+-        this.stream.pipe(writable);
++        if (this.stream.pipe == null) {
++            polypipe(this.stream, writable);
++        }
++        else {
++            this.stream.pipe(writable);
++        }
+         this.stream.on('error', streamErrorHandler);
+         this.stream.on('close', () => {
+             this.log('(%s)stream :: on close', this.options.clientId);
+@@ -322,6 +358,15 @@ class MqttClient extends TypedEmitter_1.TypedEventEmitter {
+             password: this.options.password,
+             properties: this.options.properties,
+         };
++        if (connectPacket.protocolVersion !== 5) {
++            delete connectPacket.properties;
++        }
++        if (!connectPacket.username) {
++            delete connectPacket.username;
++        }
++        if (!connectPacket.password) {
++            delete connectPacket.password;
++        }
+         if (this.options.will) {
+             connectPacket.will = {
+                 ...this.options.will,
+@@ -356,7 +401,9 @@ class MqttClient extends TypedEmitter_1.TypedEventEmitter {
+                 this._writePacket(authPacket);
+             }
+         }
+-        this.stream.setMaxListeners(1000);
++        if (this.stream.setMaxListeners != null) {
++            this.stream.setMaxListeners(1000);
++        }
+         clearTimeout(this.connackTimer);
+         this.connackTimer = setTimeout(() => {
+             this.log('!!connectTimeout hit!! Calling _cleanUp with force `true`');
+@@ -906,9 +953,8 @@ class MqttClient extends TypedEmitter_1.TypedEventEmitter {
+             this._sendPacket(packet, () => {
+                 this.log('_cleanUp :: (%s) :: destroying stream', this.options.clientId);
+                 setImmediate(() => {
+-                    this.stream.end(() => {
+-                        this.log('_cleanUp :: (%s) :: stream destroyed', this.options.clientId);
+-                    });
++                    this.stream.end();
++                    this.log('_cleanUp :: (%s) :: stream destroyed', this.options.clientId);
+                 });
+             });
+         }
+diff --git a/node_modules/mqtt/build/lib/connect/index.js b/node_modules/mqtt/build/lib/connect/index.js
+index 5fd6fef..0a1ee40 100644
+--- a/node_modules/mqtt/build/lib/connect/index.js
++++ b/node_modules/mqtt/build/lib/connect/index.js
+@@ -5,7 +5,6 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
+ Object.defineProperty(exports, "__esModule", { value: true });
+ exports.connectAsync = connectAsync;
+ const debug_1 = __importDefault(require("debug"));
+-const url_1 = __importDefault(require("url"));
+ const client_1 = __importDefault(require("../client"));
+ const is_browser_1 = __importDefault(require("../is-browser"));
+ if (typeof process?.nextTick !== 'function') {
+@@ -34,23 +33,6 @@ function connect(brokerUrl, opts) {
+         brokerUrl = '';
+     }
+     opts = opts || {};
+-    if (brokerUrl && typeof brokerUrl === 'string') {
+-        const parsedUrl = url_1.default.parse(brokerUrl, true);
+-        const parsedOptions = {};
+-        if (parsedUrl.port != null) {
+-            parsedOptions.port = Number(parsedUrl.port);
+-        }
+-        parsedOptions.host = parsedUrl.hostname;
+-        parsedOptions.query = parsedUrl.query;
+-        parsedOptions.auth = parsedUrl.auth;
+-        parsedOptions.protocol = parsedUrl.protocol;
+-        parsedOptions.path = parsedUrl.path;
+-        opts = { ...parsedOptions, ...opts };
+-        if (!opts.protocol) {
+-            throw new Error('Missing protocol');
+-        }
+-        opts.protocol = opts.protocol.replace(/:$/, '');
+-    }
+     opts.unixSocket = opts.unixSocket || opts.protocol?.includes('+unix');
+     if (opts.unixSocket) {
+         opts.protocol = opts.protocol.replace('+unix', '');
+@@ -97,23 +79,13 @@ function connect(brokerUrl, opts) {
+     }
+     if (!protocols) {
+         protocols = {};
+-        if (!is_browser_1.default && !opts.forceNativeWebSocket) {
+-            protocols.ws = require('./ws').streamBuilder;
+-            protocols.wss = require('./ws').streamBuilder;
+-            protocols.mqtt = require('./tcp').default;
+-            protocols.tcp = require('./tcp').default;
+-            protocols.ssl = require('./tls').default;
+-            protocols.tls = protocols.ssl;
+-            protocols.mqtts = require('./tls').default;
+-        }
+-        else {
+-            protocols.ws = require('./ws').browserStreamBuilder;
+-            protocols.wss = require('./ws').browserStreamBuilder;
+-            protocols.wx = require('./wx').default;
+-            protocols.wxs = require('./wx').default;
+-            protocols.ali = require('./ali').default;
+-            protocols.alis = require('./ali').default;
+-        }
++        protocols.ws = require('./ws').browserStreamBuilder;
++        protocols.wss = require('./ws').browserStreamBuilder;
++        protocols.mqtt = require('./tcp').default;
++        protocols.tcp = require('./tcp').default;
++        protocols.ssl = require('./tls').default;
++        protocols.tls = protocols.ssl;
++        protocols.mqtts = require('./tls').default;
+     }
+     if (!protocols[opts.protocol]) {
+         const isSecure = ['mqtts', 'wss'].indexOf(opts.protocol) !== -1;
+diff --git a/node_modules/mqtt/build/lib/connect/tcp.js b/node_modules/mqtt/build/lib/connect/tcp.js
+index 563c9a7..7b840c5 100644
+--- a/node_modules/mqtt/build/lib/connect/tcp.js
++++ b/node_modules/mqtt/build/lib/connect/tcp.js
+@@ -3,22 +3,22 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
+     return (mod && mod.__esModule) ? mod : { "default": mod };
+ };
+ Object.defineProperty(exports, "__esModule", { value: true });
+-const net_1 = __importDefault(require("net"));
++const net_1 = __importDefault(require("react-native-tcp-socket"));
+ const debug_1 = __importDefault(require("debug"));
+-const socks_1 = __importDefault(require("./socks"));
+ const debug = (0, debug_1.default)('mqttjs:tcp');
+ const buildStream = (client, opts) => {
+     opts.port = opts.port || 1883;
+     opts.hostname = opts.hostname || opts.host || 'localhost';
+-    if (opts.socksProxy) {
+-        return (0, socks_1.default)(opts.hostname, opts.port, opts.socksProxy, {
+-            timeout: opts.socksTimeout,
+-        });
+-    }
+     const { port, path } = opts;
+     const host = opts.hostname;
+     debug('port %d and host %s', port, host);
+-    return net_1.default.createConnection({ port, host, path });
++    return net_1.default.createConnection({
++        port,
++        host,
++        path,
++        interface: opts.interface,
++        localAddress: opts.localAddress,
++    });
+ };
+ exports.default = buildStream;
+ //# sourceMappingURL=tcp.js.map
+\ No newline at end of file
+diff --git a/node_modules/mqtt/build/lib/connect/tls.js b/node_modules/mqtt/build/lib/connect/tls.js
+index ae6460f..1fd5089 100644
+--- a/node_modules/mqtt/build/lib/connect/tls.js
++++ b/node_modules/mqtt/build/lib/connect/tls.js
+@@ -3,24 +3,10 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
+     return (mod && mod.__esModule) ? mod : { "default": mod };
+ };
+ Object.defineProperty(exports, "__esModule", { value: true });
+-const tls_1 = require("tls");
+-const net_1 = __importDefault(require("net"));
++const tls_1 = __importDefault(require("react-native-tcp-socket"));
++const net_1 = __importDefault(require("react-native-tcp-socket"));
+ const debug_1 = __importDefault(require("debug"));
+-const socks_1 = __importDefault(require("./socks"));
+ const debug = (0, debug_1.default)('mqttjs:tls');
+-function connect(opts) {
+-    const { host, port, socksProxy, ...rest } = opts;
+-    if (socksProxy !== undefined) {
+-        const socket = (0, socks_1.default)(host, port, socksProxy, {
+-            timeout: opts.socksTimeout,
+-        });
+-        return (0, tls_1.connect)({
+-            ...rest,
+-            socket,
+-        });
+-    }
+-    return (0, tls_1.connect)(opts);
+-}
+ const buildStream = (client, opts) => {
+     opts.port = opts.port || 8883;
+     opts.host = opts.hostname || opts.host || 'localhost';
+@@ -30,14 +16,9 @@ const buildStream = (client, opts) => {
+     opts.rejectUnauthorized = opts.rejectUnauthorized !== false;
+     delete opts.path;
+     debug('port %d host %s rejectUnauthorized %b', opts.port, opts.host, opts.rejectUnauthorized);
+-    const connection = connect(opts);
++    const connection = tls_1.default.connectTLS(opts);
+     connection.on('secureConnect', () => {
+-        if (opts.rejectUnauthorized && !connection.authorized) {
+-            connection.emit('error', new Error('TLS not authorized'));
+-        }
+-        else {
+-            connection.removeListener('error', handleTLSerrors);
+-        }
++        connection.removeListener('error', handleTLSerrors);
+     });
+     function handleTLSerrors(err) {
+         if (opts.rejectUnauthorized) {
+diff --git a/node_modules/mqtt/build/lib/connect/ws.js b/node_modules/mqtt/build/lib/connect/ws.js
+index 9e3ba3f..b4361c6 100644
+--- a/node_modules/mqtt/build/lib/connect/ws.js
++++ b/node_modules/mqtt/build/lib/connect/ws.js
+@@ -182,7 +182,7 @@ const browserStreamBuilder = (client, opts) => {
+         stream.destroy(error);
+     }
+     async function onMessage(event) {
+-        if (!proxy || !proxy.readable || !proxy.writable) {
++        if (!proxy || proxy.destroyed || proxy._writableState.ended) {
+             return;
+         }
+         let { data } = event;

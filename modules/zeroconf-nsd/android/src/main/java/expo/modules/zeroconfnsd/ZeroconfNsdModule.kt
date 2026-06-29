@@ -1,11 +1,11 @@
-package expo.modules.mqttzeroconfnsd
+package expo.modules.zeroconfnsd
 
 import android.content.Context
 import expo.modules.kotlin.exception.Exceptions
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 
-class MqttZeroconfNsdModule : Module() {
+class ZeroconfNsdModule : Module() {
   private var engine: NsdDiscoveryEngine? = null
 
   private val context: Context
@@ -23,7 +23,7 @@ class MqttZeroconfNsdModule : Module() {
 
   override fun definition() =
       ModuleDefinition {
-        Name("MqttZeroconfNsd")
+        Name("ZeroconfNsd")
 
         Events("onService")
 
@@ -32,12 +32,12 @@ class MqttZeroconfNsdModule : Module() {
           engine = null
         }
 
-        AsyncFunction("watch") { type: String, domain: String ->
-          ensureEngine().watch(type, domain)
+        AsyncFunction("watchAll") { types: List<String>, domain: String ->
+          ensureEngine().watchAll(types, domain)
         }
 
-        AsyncFunction("unwatch") { type: String, domain: String ->
-          ensureEngine().unwatch(type, domain)
+        AsyncFunction("unwatchAll") { types: List<String>, domain: String ->
+          ensureEngine().unwatchAll(types, domain)
         }
 
         AsyncFunction("close") {

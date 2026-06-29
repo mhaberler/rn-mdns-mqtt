@@ -16,7 +16,7 @@ ADR 0002 rejected NsdManager on Samsung AP based on an earlier spike (`onService
 
 ## Decision
 
-**Android:** local Expo module [`modules/mqtt-zeroconf-nsd/`](../../modules/mqtt-zeroconf-nsd/) porting Capacitor `NsdManager` browse/resolve (`watch` / `unwatch` / `close`). Single OS-managed browse per service type — parallel `_mqtt-ws._tcp` and `_mqtt-wss._tcp`, matching Capacitor.
+**Android:** local Expo module [`modules/zeroconf-nsd/`](../../modules/zeroconf-nsd/) — generic `NsdManager` browse/resolve via `watchAll(types, domain)` / `unwatchAll` / `close`. Parallel watches for all app-configured Bonjour types. See [0007](./0007-four-broker-types-zeroconf-nsd.md).
 
 **iOS:** unchanged — stock `react-native-zeroconf` Bonjour with WS/WSS time-slice rotation.
 
@@ -42,7 +42,7 @@ ADR 0002 rejected NsdManager on Samsung AP based on an earlier spike (`onService
 
 ## Consequences
 
-- [`src/lib/zeroconf-adapter.ts`](../../src/lib/zeroconf-adapter.ts): platform split (Android → `mqtt-zeroconf-nsd`, iOS → `react-native-zeroconf`).
+- [`src/lib/zeroconf-adapter.ts`](../../src/lib/zeroconf-adapter.ts): platform split (Android → lazy `zeroconf-nsd`, iOS → `react-native-zeroconf`). Module is Android-only — static JS import crashes iOS Release ([0006](./0006-ios-lazy-android-nsd-import.md)).
 - Delete [`src/lib/discovery-mode.ts`](../../src/lib/discovery-mode.ts), [`src/lib/zeroconf-native*.ts`](../../src/lib/zeroconf-native.ts).
 - [`react-native.config.js`](../../react-native.config.js): exclude `react-native-zeroconf` on Android.
 - Rebuild dev client after `npm install` (new native module).

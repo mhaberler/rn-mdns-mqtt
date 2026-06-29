@@ -20,10 +20,14 @@ import { isBrokerConnectReady, pickConnectHost } from '@/lib/broker-host';
 import { canSoftRefreshDiscovery } from '@/lib/zeroconf-adapter';
 import { hasDevClientNativeModules, isExpoGo } from '@/lib/native-modules';
 import {
+  BROKER_SERVICE_TYPES,
   brokerKey,
+  DEFAULT_PORT_BY_SERVICE_TYPE,
   friendlyType,
-  isWssType,
+  isTlsType,
   sourceOf,
+  validateBrokerTypePort,
+  type BrokerServiceType,
 } from '@/lib/service-type';
 import type { ServiceEntry } from '@/types/broker';
 import { useScreenInsets } from '@/hooks/use-screen-insets';
@@ -32,6 +36,15 @@ const NOT_FOUND_GRACE_MS = 12000;
 const PRIVACY_POLICY_URL =
   'https://github.com/mhaberler/rn-mdns-mqtt/blob/main/PRIVACY.md';
 const SUPPORT_URL = 'https://github.com/mhaberler/rn-mdns-mqtt';
+
+const MQTT_TCP = '_mqtt._tcp.' as BrokerServiceType;
+
+const MANUAL_TYPE_OPTIONS: { type: BrokerServiceType; label: string }[] = [
+  { type: '_mqtt._tcp.', label: 'MQTT' },
+  { type: '_secure-mqtt._tcp.', label: 'MQTTS' },
+  { type: '_mqtt-ws._tcp.', label: 'WS' },
+  { type: '_mqtt-wss._tcp.', label: 'WSS' },
+];
 
 function isDiscoveredBroker(b: ServiceEntry): boolean {
   return b.source ? b.source === 'discovered' : !!b.discovered;
@@ -76,11 +89,10 @@ export default function ScannerScreen() {
 
   const [services] = useState(() => defaultPreconfigured());
   const [manualHost, setManualHost] = useState('');
-  const [manualPort, setManualPort] = useState('8883');
-  const [selectedType, setSelectedType] = useState<'_mqtt-ws._tcp.' | '_mqtt-wss._tcp.'>(
-    '_mqtt-ws._tcp.',
-  );
+  const [manualPort, setManualPort] = useState(String(DEFAULT_PORT_BY_SERVICE_TYPE[MQTT_TCP]));
+  const [selectedType, setSelectedType] = useState<BrokerServiceType>(MQTT_TCP);
   const [manualRejectUnauthorized, setManualRejectUnauthorized] = useState(true);
+  const [manualFormError, setManualFormError] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isTesting, setIsTesting] = useState(false);
   const [testResult, setTestResult] = useState<boolean | null>(null);
@@ -156,7 +168,7 @@ export default function ScannerScreen() {
   };
 
   const navigateToClient = (service: ServiceEntry) => {
-    mqttConn.connect(service);
+    mqttConn.selectBroker(service);
     router.push('/client');
   };
 
@@ -174,6 +186,13 @@ export default function ScannerScreen() {
     const port = parseInt(manualPort, 10);
     if (!manualHost || !port) return;
 
+    const typeError = validateBrokerTypePort(selectedType, port);
+    if (typeError) {
+      setManualFormError(typeError);
+      return;
+    }
+    setManualFormError(null);
+
     const entry: ServiceEntry = {
       name: `${manualHost}:${port}`,
       type: selectedType,
@@ -182,7 +201,7 @@ export default function ScannerScreen() {
       discovered: false,
       resolved: true,
       source: 'manual',
-      rejectUnauthorized: manualRejectUnauthorized,
+      rejectUnauthorized: isTlsType(selectedType) ? manualRejectUnauthorized : undefined,
     };
 
     const key = brokerKey(entry);
@@ -192,7 +211,17 @@ export default function ScannerScreen() {
     setPreferredBroker({ ...entry, tested: false });
     setTestResult(null);
     setManualHost('');
-    setManualPort('8883');
+    setManualPort(String(DEFAULT_PORT_BY_SERVICE_TYPE[MQTT_TCP]));
+    setSelectedType(MQTT_TCP);
+  };
+
+  const selectManualType = (nextType: BrokerServiceType) => {
+    setManualFormError(null);
+    const prevDefault = String(DEFAULT_PORT_BY_SERVICE_TYPE[selectedType]);
+    setSelectedType(nextType);
+    setManualPort((current) =>
+      current === prevDefault ? String(DEFAULT_PORT_BY_SERVICE_TYPE[nextType]) : current,
+    );
   };
 
   const removeManualBroker = (entry: ServiceEntry) => {
@@ -343,7 +372,7 @@ export default function ScannerScreen() {
                     />
                   </View>
                 ) : null}
-                {isWssType(preferredBroker.type) ? (
+                {isTlsType(preferredBroker.type) ? (
                   <View style={styles.tlsRow}>
                     <Switch
                       value={preferredBroker.rejectUnauthorized !== false}
@@ -438,19 +467,17 @@ export default function ScannerScreen() {
                 keyboardType="number-pad"
               />
               <View style={styles.typePicker}>
-                <Pressable
-                  style={[styles.typeOption, selectedType === '_mqtt-ws._tcp.' && styles.typeSelected]}
-                  onPress={() => setSelectedType('_mqtt-ws._tcp.')}>
-                  <Text>WS</Text>
-                </Pressable>
-                <Pressable
-                  style={[styles.typeOption, selectedType === '_mqtt-wss._tcp.' && styles.typeSelected]}
-                  onPress={() => setSelectedType('_mqtt-wss._tcp.')}>
-                  <Text>WSS</Text>
-                </Pressable>
+                {MANUAL_TYPE_OPTIONS.map(({ type, label }) => (
+                  <Pressable
+                    key={type}
+                    style={[styles.typeOption, selectedType === type && styles.typeSelected]}
+                    onPress={() => selectManualType(type)}>
+                    <Text style={styles.typeOptionText}>{label}</Text>
+                  </Pressable>
+                ))}
               </View>
             </View>
-            {selectedType === '_mqtt-wss._tcp.' ? (
+            {isTlsType(selectedType) ? (
               <View style={styles.tlsRow}>
                 <Switch
                   value={manualRejectUnauthorized}
@@ -458,6 +485,9 @@ export default function ScannerScreen() {
                 />
                 <Text style={styles.tlsLabel}>Verify TLS</Text>
               </View>
+            ) : null}
+            {manualFormError ? (
+              <Text style={styles.manualFormError}>{manualFormError}</Text>
             ) : null}
             <Pressable style={[styles.btn, styles.btnPrimary]} onPress={addManualService}>
               <Text style={styles.btnText}>Add</Text>
@@ -717,6 +747,7 @@ const styles = StyleSheet.create({
     padding: 8,
     gap: 8,
   },
+  manualFormError: { color: Colors.error, fontSize: 13 },
   input: {
     borderWidth: 1,
     borderColor: '#E5E7EB',
@@ -728,15 +759,17 @@ const styles = StyleSheet.create({
   },
   manualRow: { flexDirection: 'row', gap: 8, alignItems: 'center' },
   portInput: { width: 80 },
-  typePicker: { flexDirection: 'row', gap: 4, flex: 1 },
+  typePicker: { flexDirection: 'row', flexWrap: 'wrap', gap: 4, flex: 1 },
   typeOption: {
-    flex: 1,
+    minWidth: '47%',
+    flexGrow: 1,
     paddingVertical: 8,
     alignItems: 'center',
     borderWidth: 1,
     borderColor: '#E5E7EB',
     borderRadius: 6,
   },
+  typeOptionText: { fontSize: 12, fontWeight: '600' },
   typeSelected: { borderColor: Colors.primary, backgroundColor: '#EFF6FF' },
   empty: { textAlign: 'center', color: Colors.textLight, fontSize: 14, paddingVertical: 32 },
   footer: { flexDirection: 'row', justifyContent: 'center', marginTop: 24 },

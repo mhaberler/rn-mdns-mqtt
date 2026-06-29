@@ -14,7 +14,7 @@ Display name: **MQTT Scout RN** (differentiated from Capacitor sibling).
 _Avoid_: rn-mdns-mqtt (repo/slug name only; not user-facing unless chosen)
 
 **Broker**:
-An MQTT endpoint the user can connect to — identified by host, port, and service type (WS/WSS).
+An MQTT endpoint the user can connect to — identified by host, port, and service type (WS, WSS, MQTT, or MQTTS via Bonjour types `_mqtt-ws._tcp`, `_mqtt-wss._tcp`, `_mqtt._tcp`, `_secure-mqtt._tcp`).
 _Avoid_: Server, service (when meaning the MQTT endpoint specifically)
 
 **Host**:
@@ -31,7 +31,7 @@ Includes full Scanner features except auto-connect and background pause/resume (
 _Avoid_: MVP (too vague), full parity
 
 **Android mDNS backend**:
-Local Expo module `mqtt-zeroconf-nsd` using Android `NsdManager`. Parallel `_mqtt-ws._tcp` and `_mqtt-wss._tcp` watches; flat discovered list. Required for dual-homed hotspot + upstream on S928B (stock zeroconf rotation breaks hotspot resolve).
+Local Expo module `zeroconf-nsd` (renamed from `mqtt-zeroconf-nsd`) using Android `NsdManager`. Parallel watches for all configured Bonjour types; flat discovered list. Required for dual-homed hotspot + upstream on S928B (stock zeroconf rotation breaks hotspot resolve).
 _Avoid_: Stock react-native-zeroconf rotation on Android for dual-homed use
 
 **Stock react-native-zeroconf (Android NSD)**:
@@ -40,7 +40,7 @@ _Avoid_: Assuming stock zeroconf matches Capacitor dual-homed behavior on Samsun
 
 **iOS mDNS backend**:
 Bonjour / NetService via `react-native-zeroconf`.
-_Avoid_: Replacing iOS Bonjour with NsdManager
+_Avoid_: Replacing iOS Bonjour with NsdManager; static import of Android-only `zeroconf-nsd` (crashes iOS Release — see ADR 0006)
 
 **Discovery segment** (deprecated on Android):
 Which L2 multicast domain a broker was found on: **upstream WiFi** or **hotspot**. Android uses a flat list like Capacitor; segment tagging is not used in v1 RN.
@@ -58,12 +58,12 @@ _Avoid_: Tether network, AP clients
 `react-native-zeroconf` (community npm package). Requires Expo dev build / prebuild — not Expo Go.
 
 **mDNS library (Android)**:
-`mqtt-zeroconf-nsd` local Expo module (`NsdManager`). Requires Expo dev build / prebuild — not Expo Go.
-_Avoid_: Stock react-native-zeroconf rotation on Android when dual-homed
+`zeroconf-nsd` local Expo module (`NsdManager`). Android-only native module; app passes service-type array via `watchAll`. Loaded via lazy `require` in [`zeroconf-adapter.ts`](src/lib/zeroconf-adapter.ts). Requires Expo dev build / prebuild — not Expo Go.
+_Avoid_: Stock react-native-zeroconf rotation on Android when dual-homed; top-level import of `zeroconf-nsd` from shared JS
 
 **MQTT client**:
-`mqtt` v5 (mqtt.js) over WebSocket — same library and connection logic as Capacitor app.
-_Avoid_: Native MQTT modules, hand-rolled protocol
+`mqtt` v5 (mqtt.js) over WebSocket (WS/WSS) or native TCP (MQTT/MQTTS via `react-native-tcp-socket` stream). Same library and connection logic as Capacitor app for WS; native TCP added for `_mqtt._tcp` / `_secure-mqtt._tcp` brokers.
+_Avoid_: Native MQTT modules that replace mqtt.js entirely
 
 **UI**:
 React Native StyleSheet, port Capacitor layout and colors. No NativeWind.

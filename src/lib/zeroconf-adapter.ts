@@ -10,6 +10,7 @@ import {
   removeLeadingAndTrailingDots,
   serviceTypeFromFullName,
   toScanParts,
+  type BrokerServiceType,
 } from '@/lib/service-type';
 
 export type ZeroconfDiscoveryAction = 'added' | 'removed' | 'resolved';
@@ -20,20 +21,12 @@ export type ZeroconfDiscoveryEvent = {
 };
 
 type DiscoveryListener = (event: ZeroconfDiscoveryEvent) => void;
-type BrokerServiceType = (typeof BROKER_SERVICE_TYPES)[number];
 
 const DOMAIN = 'local.';
-const ANDROID_SCAN_TYPES: readonly BrokerServiceType[] = [
-  BROKER_SERVICE_TYPES[0],
-  BROKER_SERVICE_TYPES[1],
-];
-const IOS_SCAN_TYPES: readonly BrokerServiceType[] = BROKER_SERVICE_TYPES;
-const PLATFORM_SCAN_TYPES: readonly BrokerServiceType[] =
-  Platform.OS === 'android' ? ANDROID_SCAN_TYPES : IOS_SCAN_TYPES;
+const PLATFORM_SCAN_TYPES: readonly BrokerServiceType[] = BROKER_SERVICE_TYPES;
 const ROTATE_SCAN_TYPES = Platform.OS === 'ios' && PLATFORM_SCAN_TYPES.length > 1;
 const INITIAL_WS_SLICE_MS = 15_000;
 const SCAN_SLICE_MS = 8_000;
-const IOS_NATIVE_SETTLE_MS = 400;
 const USE_ANDROID_NSD = Platform.OS === 'android';
 
 type NsdServiceEvent = {
@@ -51,8 +44,8 @@ type NsdServiceEvent = {
 };
 
 type NsdModule = {
-  watchService(type: string, domain: string): Promise<void>;
-  unwatchService(type: string, domain: string): Promise<void>;
+  watchAll(types: string[], domain: string): Promise<void>;
+  unwatchAll(types: string[], domain: string): Promise<void>;
   closeDiscovery(): Promise<void>;
   addServiceListener(listener: (event: NsdServiceEvent) => void): { remove: () => void };
 };
@@ -61,8 +54,7 @@ let nsdModule: NsdModule | null = null;
 
 function getNsdModule(): NsdModule {
   if (!nsdModule) {
-    // Android-only; never load on iOS (module calls requireNativeModule at init).
-    nsdModule = require('mqtt-zeroconf-nsd') as NsdModule;
+    nsdModule = require('zeroconf-nsd') as NsdModule;
   }
   return nsdModule;
 }
@@ -118,7 +110,7 @@ function mapServiceEntry(
     fallbackType ??
     (input.type && input.type.includes('._tcp') ? input.type : null) ??
     serviceTypeFromFullName(input.name ?? '') ??
-    '_mqtt-ws._tcp.';
+    BROKER_SERVICE_TYPES[0];
   const host =
     input.host ||
     input.ipv4Addresses?.[0] ||
@@ -215,12 +207,10 @@ async function stopNativeScan(): Promise<void> {
 
 async function stopAndroidScans() {
   const nsd = getNsdModule();
-  for (const serviceType of ANDROID_SCAN_TYPES) {
-    try {
-      await nsd.unwatchService(serviceType, DOMAIN);
-    } catch {
-      /* ignore unwatch while tearing down */
-    }
+  try {
+    await nsd.unwatchAll([...PLATFORM_SCAN_TYPES], DOMAIN);
+  } catch {
+    /* ignore unwatch while tearing down */
   }
   try {
     await nsd.closeDiscovery();
@@ -293,10 +283,7 @@ function wireAndroidEvents() {
 
 async function startAndroidScans() {
   wireAndroidEvents();
-  const nsd = getNsdModule();
-  await Promise.all(
-    ANDROID_SCAN_TYPES.map((serviceType) => nsd.watchService(serviceType, DOMAIN)),
-  );
+  await getNsdModule().watchAll([...PLATFORM_SCAN_TYPES], DOMAIN);
 }
 
 async function armScanSession(): Promise<void> {
@@ -333,25 +320,6 @@ async function armScanSession(): Promise<void> {
   }, INITIAL_WS_SLICE_MS);
 }
 
-function scheduleNativeRestart(settleMs: number) {
-  if (pendingRestartTimer) {
-    clearTimeout(pendingRestartTimer);
-  }
-
-  pendingRestartTimer = setTimeout(() => {
-    pendingRestartTimer = null;
-    if (!hasDevClientNativeModules()) return;
-
-    void (async () => {
-      await stopNativeScan();
-      setTimeout(() => {
-        if (!hasDevClientNativeModules()) return;
-        void armScanSession();
-      }, settleMs);
-    })();
-  }, settleMs);
-}
-
 function wireIosEvents() {
   if (wired) return;
   const z = getZeroconf();
@@ -381,7 +349,7 @@ function wireIosEvents() {
   z.on('remove', (name: string) => {
     const raw = z.getServices()[name];
     const fallbackType =
-      knownServiceTypes.get(name) ?? currentScanType ?? '_mqtt-ws._tcp.';
+      knownServiceTypes.get(name) ?? currentScanType ?? BROKER_SERVICE_TYPES[0];
     knownServiceTypes.delete(name);
 
     if (!raw) {

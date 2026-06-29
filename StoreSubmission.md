@@ -8,7 +8,7 @@ Forked from Capacitor `mdns-mqtt-vue3` store pack — update URLs and screenshot
 
 ### App Review Notes
 
-MQTT Scout RN is a developer/IoT utility for discovering MQTT brokers via Bonjour/mDNS and publishing/subscribing over MQTT. Native discovery uses NetService (iOS) and Android `NsdManager` via local Expo module `mqtt-zeroconf-nsd` — not a website wrapper. Flat discovered broker list on Android (dual-homed upstream + hotspot); iOS uses time-sliced WS/WSS Bonjour scans.
+MQTT Scout RN is a developer/IoT utility for discovering MQTT brokers via Bonjour/mDNS and publishing/subscribing over MQTT. Native discovery uses NetService (iOS) and Android `NsdManager` via local Expo module `zeroconf-nsd` — not a website wrapper. Supports WS, WSS, native MQTT, and MQTTS Bonjour types. Flat discovered broker list on Android (dual-homed upstream + hotspot); iOS uses time-sliced four-type Bonjour scans.
 
 How to test:
 
@@ -29,6 +29,7 @@ Privacy policy: `PRIVACY.md` in this repo.
 - [ ] Privacy Policy URL in App Store Connect
 - [ ] Screenshots: Scanner + Client round-trip
 - [ ] `expo prebuild` + device test on real hardware (not Expo Go)
+- [ ] Test **Release** configuration on iOS device (`bun run ios-device-release`) — Debug alone can miss eager Android-module import bugs
 
 ## Google Play Console
 

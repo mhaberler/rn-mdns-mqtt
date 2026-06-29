@@ -1,51 +1,20 @@
 import '@/lib/polyfills';
 
-import mqtt, { type MqttClient } from 'mqtt';
+import mqtt, { type IClientOptions, type MqttClient } from 'mqtt';
 
 import {
   brokerConnectEndpoint,
-  formatHostForUrl,
   isBrokerConnectReady,
-  normalizeMdnsHost,
 } from '@/lib/broker-host';
+import { getDeviceIPv4 } from '@/lib/device-network';
 import { createExternalStore } from '@/lib/external-store';
-import { isWssType } from '@/lib/service-type';
+import { buildConnectOptions, connectLogLabel, createMqttClientId, friendlyConnectError } from '@/lib/mqtt-connect';
+import { buildConnectUrl } from '@/lib/mqtt-url';
+import { validateBrokerTypePort } from '@/lib/service-type';
 import { liveHostForFromDiscovery } from '@/hooks/use-mqtt-discovery';
 import type { ConnectionState, MessageItem, ServiceEntry } from '@/types/broker';
 
-const wsPatterns = ['_mqtt-ws._tcp.', '_mqtt-wss._tcp.', '._mqtt-ws._tcp', '._mqtt-wss._tcp'];
-const tlsPatterns = ['_mqtts._tcp.', '_mqtt-wss._tcp.', '._mqtts._tcp.', '._mqtt-wss._tcp.'];
-
-function isWebSocketType(type: string): boolean {
-  return wsPatterns.some((p) => type.includes(p));
-}
-
-function isTlsType(type: string): boolean {
-  return tlsPatterns.some((p) => type.includes(p));
-}
-
-export function buildBrokerUrl(broker: ServiceEntry): string {
-  const endpoint = brokerConnectEndpoint(broker);
-  if (!endpoint) {
-    const host = formatHostForUrl(normalizeMdnsHost(broker.host));
-    return `ws://${host}:${broker.port || 0}`;
-  }
-  const isWs = isWebSocketType(broker.type);
-  const isTls = isTlsType(broker.type);
-  if (isWs) {
-    return `${isTls ? 'wss' : 'ws'}://${endpoint.host}:${endpoint.port}`;
-  }
-  return `${isTls ? 'mqtts' : 'mqtt'}://${endpoint.host}:${endpoint.port}`;
-}
-
-export function buildConnectUrl(broker: ServiceEntry): string {
-  const base = buildBrokerUrl(broker);
-  if (isWebSocketType(broker.type)) {
-    const wsPath = broker.txtRecord?.path || '/mqtt';
-    return `${base}${wsPath}`;
-  }
-  return base;
-}
+export { buildBrokerUrl, buildConnectUrl } from '@/lib/mqtt-url';
 
 function derivedSource(broker: ServiceEntry): string {
   if (broker.source) return broker.source;
@@ -73,6 +42,8 @@ const connectedBrokerStore = createExternalStore<ServiceEntry | null>(null);
 
 let mqttClient: MqttClient | null = null;
 let connectionTimeout: ReturnType<typeof setTimeout> | null = null;
+let connectGeneration = 0;
+let testConnectInFlight = false;
 
 const MESSAGE_CAP = 10;
 
@@ -103,15 +74,33 @@ function cleanup() {
   }
 }
 
-function friendlyConnectError(message: string, url: string): string {
-  if (message.includes('connack timeout')) {
-    return `Broker did not reply (CONNACK timeout) at ${url}. Check IP/port, WS path (/mqtt), same Wi‑Fi, and broker is MQTT-over-WebSocket.`;
-  }
-  return `Connection failed: ${message}`;
+function mqttOptions(broker: ServiceEntry, connectTimeout: number) {
+  const options: IClientOptions = {
+    clientId: createMqttClientId(),
+    clean: true,
+    connectTimeout,
+    reconnectPeriod: 0,
+    protocolId: 'MQTT',
+    protocolVersion: 4,
+  };
+
+  if (broker.username) options.username = broker.username;
+  if (broker.password) options.password = broker.password;
+
+  return options;
+}
+
+function selectBroker(broker: ServiceEntry) {
+  connectedBrokerStore.setState(broker);
 }
 
 function connect(brokerArg: ServiceEntry) {
   const broker = withLiveHost(brokerArg);
+
+  if (testConnectInFlight) {
+    errorStore.setState('Connection test in progress — wait for it to finish');
+    return;
+  }
 
   if (
     mqttClient &&
@@ -125,6 +114,7 @@ function connect(brokerArg: ServiceEntry) {
 
   cleanup();
 
+  const generation = ++connectGeneration;
   connectionStateStore.setState('trying');
   errorStore.setState(null);
   connectedBrokerStore.setState(broker);
@@ -136,26 +126,39 @@ function connect(brokerArg: ServiceEntry) {
     return;
   }
 
-  try {
-    const url = buildConnectUrl(broker);
+  void (async () => {
+    try {
+      const deviceIp = await getDeviceIPv4();
+      if (generation !== connectGeneration) return;
 
-    const options: mqtt.IClientOptions = {
-      clientId: `mqtt_rn_${Math.random().toString(16).slice(2, 10)}`,
-      clean: true,
-      connectTimeout: 30000,
-      reconnectPeriod: 0,
-    };
+      const endpoint = brokerConnectEndpoint(broker, deviceIp);
+      if (!endpoint) {
+        errorStore.setState(
+          deviceIp
+            ? `No broker IP on your subnet (phone ${deviceIp}) — wait for mDNS or tap Refresh`
+            : 'Broker not resolved yet — wait for green dot or tap Refresh',
+        );
+        connectionStateStore.setState('disconnected');
+        return;
+      }
 
-    if (broker.username) options.username = broker.username;
-    if (broker.password) options.password = broker.password;
+      const typePortError = validateBrokerTypePort(broker.type, endpoint.port);
+      if (typePortError) {
+        errorStore.setState(typePortError);
+        connectionStateStore.setState('disconnected');
+        return;
+      }
 
-    if (isTlsType(broker.type)) {
-      options.rejectUnauthorized = broker.rejectUnauthorized !== false;
-    }
-
-    mqttClient = mqtt.connect(url, options);
+      const options = mqttOptions(broker, 30000);
+      const connectOpts = buildConnectOptions(broker, options, deviceIp);
+      if (__DEV__) {
+        console.log(connectLogLabel(broker, connectOpts, deviceIp));
+      }
+      addMessage('system', connectLogLabel(broker, connectOpts, deviceIp));
+      mqttClient = mqtt.connect(connectOpts);
 
     mqttClient.on('connect', () => {
+      if (generation !== connectGeneration) return;
       connectionStateStore.setState('connected');
       if (connectionTimeout) {
         clearTimeout(connectionTimeout);
@@ -163,6 +166,7 @@ function connect(brokerArg: ServiceEntry) {
       }
 
       mqttClient?.subscribe('#', (err) => {
+        if (generation !== connectGeneration) return;
         if (err) {
           errorStore.setState(`Failed to subscribe: ${err.message}`);
         } else {
@@ -172,18 +176,23 @@ function connect(brokerArg: ServiceEntry) {
     });
 
     mqttClient.on('error', (err: Error) => {
-      errorStore.setState(friendlyConnectError(err?.message || 'Unknown error', url));
+      if (generation !== connectGeneration) return;
+      errorStore.setState(friendlyConnectError(err?.message || 'Unknown error', broker));
       connectionStateStore.setState('disconnected');
       cleanup();
     });
 
     mqttClient.on('close', () => {
+      if (generation !== connectGeneration) return;
       const wasTrying = connectionStateStore.getState() === 'trying';
       const wasConnected = connectionStateStore.getState() === 'connected';
       connectionStateStore.setState('disconnected');
       if (wasTrying) {
+        const endpoint = brokerConnectEndpoint(broker);
         errorStore.setState(
-          (current) => current ?? `Connection closed before CONNACK at ${url}`,
+          (current) =>
+            current ??
+            `Connection closed before CONNACK (${endpoint?.host}:${endpoint?.port ?? broker.port}) — wrong IP/interface or broker rejected CONNECT`,
         );
       } else if (wasConnected) {
         addMessage('system', 'Connection closed');
@@ -203,18 +212,21 @@ function connect(brokerArg: ServiceEntry) {
     });
 
     connectionTimeout = setTimeout(() => {
+      if (generation !== connectGeneration) return;
       if (connectionStateStore.getState() === 'trying') {
         errorStore.setState('Connection timeout — check broker address and port');
         connectionStateStore.setState('disconnected');
         cleanup();
       }
     }, 15000);
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : 'Unknown error';
-    errorStore.setState(`Connection failed: ${msg}`);
-    connectionStateStore.setState('disconnected');
-    connectedBrokerStore.setState(null);
-  }
+    } catch (err: unknown) {
+      if (generation !== connectGeneration) return;
+      const msg = err instanceof Error ? err.message : 'Unknown error';
+      errorStore.setState(`Connection failed: ${msg}`);
+      connectionStateStore.setState('disconnected');
+      connectedBrokerStore.setState(null);
+    }
+  })();
 }
 
 function disconnect() {
@@ -244,61 +256,69 @@ function publish(topic: string, payload: string): Promise<void> {
 
 async function testConnect(broker: ServiceEntry, timeoutMs: number = 15000): Promise<boolean> {
   if (!isBrokerConnectReady(broker)) return false;
+  if (connectionStateStore.getState() === 'trying') return false;
+  const endpoint = brokerConnectEndpoint(broker);
+  if (!endpoint || validateBrokerTypePort(broker.type, endpoint.port)) return false;
 
-  const url = buildConnectUrl(broker);
+  testConnectInFlight = true;
   const testTopic = `__test/${Math.random().toString(16).slice(2, 10)}`;
   const testPayload = `test-${Date.now()}`;
 
-  const options: mqtt.IClientOptions = {
-    clientId: `mqtt_test_${Math.random().toString(16).slice(2, 10)}`,
-    clean: true,
-    connectTimeout: timeoutMs,
-    reconnectPeriod: 0,
-  };
-
-  if (broker.username) options.username = broker.username;
-  if (broker.password) options.password = broker.password;
-  if (isTlsType(broker.type)) {
-    options.rejectUnauthorized = broker.rejectUnauthorized !== false;
-  }
-
   return new Promise<boolean>((resolve) => {
     let resolved = false;
-    const testClient = mqtt.connect(url, options);
-
-    const finish = (result: boolean) => {
-      if (resolved) return;
-      resolved = true;
-      try {
-        testClient.removeAllListeners();
-        testClient.end(true);
-      } catch {
-        /* ignore */
-      }
-      clearTimeout(timer);
-      resolve(result);
+    const options = {
+      ...mqttOptions(broker, timeoutMs),
+      clientId: createMqttClientId('mqtt_test'),
     };
 
-    const timer = setTimeout(() => finish(false), timeoutMs);
-
-    testClient.on('connect', () => {
-      testClient.subscribe(testTopic, (err) => {
-        if (err) {
-          finish(false);
-          return;
+    void (async () => {
+      try {
+        const deviceIp = await getDeviceIPv4();
+        const connectOpts = buildConnectOptions(broker, options, deviceIp);
+        if (__DEV__) {
+          console.log(connectLogLabel(broker, connectOpts, deviceIp));
         }
-        testClient.publish(testTopic, testPayload);
-      });
-    });
+        const testClient = mqtt.connect(connectOpts);
 
-    testClient.on('message', (topic: string, message: Buffer) => {
-      if (topic === testTopic && message.toString() === testPayload) {
-        finish(true);
+        const finish = (result: boolean) => {
+          if (resolved) return;
+          resolved = true;
+          testConnectInFlight = false;
+          try {
+            testClient.removeAllListeners();
+            testClient.end(true);
+          } catch {
+            /* ignore */
+          }
+          clearTimeout(timer);
+          resolve(result);
+        };
+
+        const timer = setTimeout(() => finish(false), timeoutMs);
+
+        testClient.on('connect', () => {
+          testClient.subscribe(testTopic, (err) => {
+            if (err) {
+              finish(false);
+              return;
+            }
+            testClient.publish(testTopic, testPayload);
+          });
+        });
+
+        testClient.on('message', (topic: string, message: Buffer) => {
+          if (topic === testTopic && message.toString() === testPayload) {
+            finish(true);
+          }
+        });
+
+        testClient.on('error', () => finish(false));
+        testClient.on('close', () => finish(false));
+      } catch {
+        testConnectInFlight = false;
+        resolve(false);
       }
-    });
-
-    testClient.on('error', () => finish(false));
-    testClient.on('close', () => finish(false));
+    })();
   });
 }
 
@@ -316,10 +336,12 @@ export function useMqttConnection() {
     brokerUrl: connectedBroker ? buildConnectUrl(connectedBroker) : '',
     isConnected: connectionState === 'connected',
     isTrying: connectionState === 'trying',
+    selectBroker,
     connect,
     disconnect,
     publish,
     testConnect,
+    isTestInFlight: testConnectInFlight,
     clearMessages: () => messagesStore.setState([]),
     addMessage,
     setError: (value: string | null) => errorStore.setState(value),
