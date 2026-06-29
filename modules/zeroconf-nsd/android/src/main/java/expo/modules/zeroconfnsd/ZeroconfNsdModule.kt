@@ -44,5 +44,13 @@ class ZeroconfNsdModule : Module() {
           engine?.close()
           engine = null
         }
+
+        AsyncFunction("getLocalIPv4ForRemote") { remoteHost: String ->
+          NetworkAddressHelper.localIpv4ForRemote(context, remoteHost)
+        }
+
+        AsyncFunction("getWifiIPv4Addresses") {
+          NetworkAddressHelper.wifiIpv4Addresses(context)
+        }
       }
 }

@@ -22,6 +22,8 @@ type ZeroconfNsdNativeModule = {
   watchAll(types: string[], domain: string): Promise<void>;
   unwatchAll(types: string[], domain: string): Promise<void>;
   close(): Promise<void>;
+  getLocalIPv4ForRemote(remoteHost: string): Promise<string | null>;
+  getWifiIPv4Addresses(): Promise<string[]>;
   addListener(eventName: 'onService', listener: (event: NsdServiceEvent) => void): EventSubscription;
 };
 
@@ -57,4 +59,12 @@ export function isZeroconfNsdAvailable(): boolean {
   } catch {
     return false;
   }
+}
+
+export async function getLocalIPv4ForRemote(remoteHost: string): Promise<string | null> {
+  return getNativeModule().getLocalIPv4ForRemote(remoteHost);
+}
+
+export async function getWifiIPv4Addresses(): Promise<string[]> {
+  return getNativeModule().getWifiIPv4Addresses();
 }

@@ -64,14 +64,14 @@ export function buildConnectOptions(
     opts.rejectUnauthorized = broker.rejectUnauthorized !== false;
   }
 
-  // react-native-tcp-socket: localAddress → iOS connectToHost:viaInterface: / Android dual-WiFi.
+  // react-native-tcp-socket: localAddress binds outbound iface (iOS viaInterface / Android dual-WiFi).
   if (Platform.OS !== 'web' && isNativeMqttType(broker.type)) {
-    const bindAddress =
-      deviceIp ?? (Platform.OS === 'ios' ? inferIphoneHotspotBind(endpoint.host) : undefined);
+    const bindAddress = deviceIp ?? inferIphoneHotspotBind(endpoint.host);
     if (bindAddress) {
       opts.localAddress = bindAddress;
     }
-    if (Platform.OS === 'android') {
+    // interface=wifi triggers bindProcessToNetwork; skip when localAddress already pins the iface.
+    if (Platform.OS === 'android' && !bindAddress) {
       opts.interface = 'wifi';
     }
   }

@@ -10,7 +10,7 @@ import { getDeviceIPv4 } from '@/lib/device-network';
 import { createExternalStore } from '@/lib/external-store';
 import { buildConnectOptions, connectLogLabel, createMqttClientId, friendlyConnectError } from '@/lib/mqtt-connect';
 import { buildConnectUrl } from '@/lib/mqtt-url';
-import { validateBrokerTypePort } from '@/lib/service-type';
+import { sourceOf, validateBrokerTypePort } from '@/lib/service-type';
 import { liveHostForFromDiscovery } from '@/hooks/use-mqtt-discovery';
 import type { ConnectionState, MessageItem, ServiceEntry } from '@/types/broker';
 
@@ -128,7 +128,14 @@ function connect(brokerArg: ServiceEntry) {
 
   void (async () => {
     try {
-      const deviceIp = await getDeviceIPv4();
+      const preliminary = brokerConnectEndpoint(broker);
+      if (!preliminary) {
+        errorStore.setState('Broker not resolved yet — wait for green dot or tap Refresh');
+        connectionStateStore.setState('disconnected');
+        return;
+      }
+
+      const deviceIp = await getDeviceIPv4(preliminary.host);
       if (generation !== connectGeneration) return;
 
       const endpoint = brokerConnectEndpoint(broker, deviceIp);
@@ -142,7 +149,11 @@ function connect(brokerArg: ServiceEntry) {
         return;
       }
 
-      const typePortError = validateBrokerTypePort(broker.type, endpoint.port);
+      const typePortError = validateBrokerTypePort(
+        broker.type,
+        endpoint.port,
+        sourceOf(broker),
+      );
       if (typePortError) {
         errorStore.setState(typePortError);
         connectionStateStore.setState('disconnected');
@@ -258,7 +269,12 @@ async function testConnect(broker: ServiceEntry, timeoutMs: number = 15000): Pro
   if (!isBrokerConnectReady(broker)) return false;
   if (connectionStateStore.getState() === 'trying') return false;
   const endpoint = brokerConnectEndpoint(broker);
-  if (!endpoint || validateBrokerTypePort(broker.type, endpoint.port)) return false;
+  if (
+    !endpoint ||
+    validateBrokerTypePort(broker.type, endpoint.port, sourceOf(broker))
+  ) {
+    return false;
+  }
 
   testConnectInFlight = true;
   const testTopic = `__test/${Math.random().toString(16).slice(2, 10)}`;
@@ -273,7 +289,14 @@ async function testConnect(broker: ServiceEntry, timeoutMs: number = 15000): Pro
 
     void (async () => {
       try {
-        const deviceIp = await getDeviceIPv4();
+        const preliminary = brokerConnectEndpoint(broker);
+        if (!preliminary) {
+          testConnectInFlight = false;
+          resolve(false);
+          return;
+        }
+
+        const deviceIp = await getDeviceIPv4(preliminary.host);
         const connectOpts = buildConnectOptions(broker, options, deviceIp);
         if (__DEV__) {
           console.log(connectLogLabel(broker, connectOpts, deviceIp));

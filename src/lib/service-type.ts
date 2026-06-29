@@ -66,13 +66,20 @@ export function mqttProtocolForType(type: string): MqttConnectProtocol {
   return 'mqtt';
 }
 
-/** Warn when manual port/type combo would send WebSocket handshake to native MQTT (or vice versa). */
-export function validateBrokerTypePort(type: string, port: number): string | null {
+/** Block wrong transport on native MQTT port (always). Manual-only hints for other IANA defaults. */
+export function validateBrokerTypePort(
+  type: string,
+  port: number,
+  source: BrokerSource = 'manual',
+): string | null {
   if (port === 1883 && isWebSocketType(type)) {
     return 'Port 1883 is native MQTT — use MQTT type, not WS/WSS';
   }
+  if (source !== 'manual') {
+    return null;
+  }
   if (port === 8883 && isWebSocketType(type)) {
-    return 'Port 8883 is MQTTS — use MQTTS type, not WS/WSS';
+    return 'Port 8883 is usually MQTTS — use MQTTS type, not WS/WSS';
   }
   if (port === 8080 && isNativeMqttType(type)) {
     return 'Port 8080 is MQTT-over-WebSocket — use WS type, not MQTT/MQTTS';
