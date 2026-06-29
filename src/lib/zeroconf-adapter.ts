@@ -1,11 +1,5 @@
 import { Platform } from 'react-native';
 import Zeroconf, { type Service } from 'react-native-zeroconf';
-import {
-  addServiceListener,
-  closeDiscovery,
-  unwatchService,
-  watchService,
-} from 'mqtt-zeroconf-nsd';
 
 import { pickConnectHost } from '@/lib/broker-host';
 import { hasDevClientNativeModules } from '@/lib/native-modules';
@@ -41,6 +35,37 @@ const INITIAL_WS_SLICE_MS = 15_000;
 const SCAN_SLICE_MS = 8_000;
 const IOS_NATIVE_SETTLE_MS = 400;
 const USE_ANDROID_NSD = Platform.OS === 'android';
+
+type NsdServiceEvent = {
+  action: 'added' | 'resolved' | 'removed';
+  service: {
+    domain: string;
+    type: string;
+    name: string;
+    port: number;
+    hostname: string;
+    ipv4Addresses: string[];
+    ipv6Addresses: string[];
+    txtRecord?: Record<string, string>;
+  };
+};
+
+type NsdModule = {
+  watchService(type: string, domain: string): Promise<void>;
+  unwatchService(type: string, domain: string): Promise<void>;
+  closeDiscovery(): Promise<void>;
+  addServiceListener(listener: (event: NsdServiceEvent) => void): { remove: () => void };
+};
+
+let nsdModule: NsdModule | null = null;
+
+function getNsdModule(): NsdModule {
+  if (!nsdModule) {
+    // Android-only; never load on iOS (module calls requireNativeModule at init).
+    nsdModule = require('mqtt-zeroconf-nsd') as NsdModule;
+  }
+  return nsdModule;
+}
 
 let zeroconf: Zeroconf | null = null;
 const activeTypes = new Set<string>();
@@ -189,15 +214,16 @@ async function stopNativeScan(): Promise<void> {
 }
 
 async function stopAndroidScans() {
+  const nsd = getNsdModule();
   for (const serviceType of ANDROID_SCAN_TYPES) {
     try {
-      await unwatchService(serviceType, DOMAIN);
+      await nsd.unwatchService(serviceType, DOMAIN);
     } catch {
       /* ignore unwatch while tearing down */
     }
   }
   try {
-    await closeDiscovery();
+    await nsd.closeDiscovery();
   } catch {
     /* ignore close while tearing down */
   }
@@ -244,7 +270,7 @@ function republishCachedServices() {
 function wireAndroidEvents() {
   if (androidServiceSubscription) return;
 
-  androidServiceSubscription = addServiceListener(({ action, service }) => {
+  androidServiceSubscription = getNsdModule().addServiceListener(({ action, service }) => {
     const mapped = mapServiceEntry(
       {
         name: service.name,
@@ -267,8 +293,9 @@ function wireAndroidEvents() {
 
 async function startAndroidScans() {
   wireAndroidEvents();
+  const nsd = getNsdModule();
   await Promise.all(
-    ANDROID_SCAN_TYPES.map((serviceType) => watchService(serviceType, DOMAIN)),
+    ANDROID_SCAN_TYPES.map((serviceType) => nsd.watchService(serviceType, DOMAIN)),
   );
 }
 

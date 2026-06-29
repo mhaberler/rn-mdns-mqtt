@@ -25,22 +25,29 @@ type MqttZeroconfNsdNativeModule = {
   addListener(eventName: 'onService', listener: (event: NsdServiceEvent) => void): EventSubscription;
 };
 
-const NativeModule = requireNativeModule<MqttZeroconfNsdNativeModule>('MqttZeroconfNsd');
+let nativeModule: MqttZeroconfNsdNativeModule | null = null;
+
+function getNativeModule(): MqttZeroconfNsdNativeModule {
+  if (!nativeModule) {
+    nativeModule = requireNativeModule<MqttZeroconfNsdNativeModule>('MqttZeroconfNsd');
+  }
+  return nativeModule;
+}
 
 export async function watchService(type: string, domain: string): Promise<void> {
-  await NativeModule.watch(type, domain);
+  await getNativeModule().watch(type, domain);
 }
 
 export async function unwatchService(type: string, domain: string): Promise<void> {
-  await NativeModule.unwatch(type, domain);
+  await getNativeModule().unwatch(type, domain);
 }
 
 export async function closeDiscovery(): Promise<void> {
-  await NativeModule.close();
+  await getNativeModule().close();
 }
 
 export function addServiceListener(listener: (event: NsdServiceEvent) => void): EventSubscription {
-  return NativeModule.addListener('onService', listener);
+  return getNativeModule().addListener('onService', listener);
 }
 
 export function isMqttZeroconfNsdAvailable(): boolean {
