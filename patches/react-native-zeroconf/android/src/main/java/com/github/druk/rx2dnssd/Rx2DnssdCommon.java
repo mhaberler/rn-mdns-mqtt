@@ -171,14 +171,27 @@ abstract class Rx2DnssdCommon implements Rx2Dnssd {
     @NonNull
     @Override
     public FlowableTransformer<BonjourService, BonjourService> queryIPV4Records() {
-        return flowable -> flowable.flatMap(bs -> {
-            if ((bs.getFlags() & BonjourService.LOST) == BonjourService.LOST) {
-                return Flowable.just(bs);
-            }
-            return createFlowable(emitter ->
-                    mDNSSD.queryRecord(0, bs.getIfIndex(), bs.getHostname(), NSType.A, NSClass.IN, true,
-                            new Rx2QueryListener(emitter, new BonjourService.Builder(bs), true)));
-        });
+        return flowable ->
+                flowable.flatMap(
+                        bs -> {
+                            if ((bs.getFlags() & BonjourService.LOST) == BonjourService.LOST) {
+                                return Flowable.just(bs);
+                            }
+                            return createFlowable(
+                                    emitter ->
+                                            mDNSSD.queryRecord(
+                                                    0,
+                                                    bs.getIfIndex(),
+                                                    bs.getHostname(),
+                                                    NSType.A,
+                                                    NSClass.IN,
+                                                    true,
+                                                    new Rx2QueryListener(
+                                                            emitter,
+                                                            new BonjourService.Builder(bs),
+                                                            true)));
+                        },
+                        /* maxConcurrency */ 1);
     }
 
     /**

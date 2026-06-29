@@ -34,6 +34,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import javax.annotation.Nullable;
 
+import io.reactivex.Flowable;
 import io.reactivex.android.schedulers.AndroidSchedulers;
 import io.reactivex.disposables.Disposable;
 import io.reactivex.schedulers.Schedulers;
@@ -49,6 +50,10 @@ public class DnssdImpl implements Zeroconf {
     private static final int RESTART_SETTLE_MS = 800;
     private static final int BROWSE_DISPOSE_SETTLE_MS = 2000;
     private static final int HOTSPOT_PROBE_DELAY_MS = 800;
+    /** Wait for resolve pipeline idle before dispose or force re-browse. */
+    private static final int PIPELINE_IDLE_MS = 1500;
+    private static final int PIPELINE_DEFERRED_RETRY_MS = 2_000;
+    private static final int PIPELINE_STALE_RESET_MS = 8_000;
     /** Align with typical ESP mDNS re-announce interval. */
     private static final int HOTSPOT_WATCHDOG_INTERVAL_MS = 15_000;
     /** Force hotspot re-browse when no resolve or browse event this long. */
@@ -253,10 +258,11 @@ public class DnssdImpl implements Zeroconf {
         Disposable disposable =
                 rxDnssd
                         .browseOnInterface(pendingScanType, pendingScanDomain, ifIndex)
-                        .doOnNext(
+                        .flatMap(
                                 bs -> {
-                                    if ((bs.getFlags() & BonjourService.LOST) == BonjourService.LOST) {
-                                        return;
+                                    if ((bs.getFlags() & BonjourService.LOST)
+                                            == BonjourService.LOST) {
+                                        return Flowable.just(bs);
                                     }
                                     pipelineDepth.incrementAndGet();
                                     lastPipelineActivityMs = System.currentTimeMillis();
@@ -271,17 +277,20 @@ public class DnssdImpl implements Zeroconf {
                                                     + bs.getIfIndex()
                                                     + " pipeline="
                                                     + pipelineDepth.get());
-                                })
-                        .compose(rxDnssd.resolve())
-                        .compose(rxDnssd.queryIPV4Records())
+                                    return Flowable.just(bs)
+                                            .compose(rxDnssd.resolve())
+                                            .compose(rxDnssd.queryIPV4Records())
+                                            .doFinally(
+                                                    () -> {
+                                                        if (pipelineDepth.decrementAndGet() < 0) {
+                                                            pipelineDepth.set(0);
+                                                        }
+                                                        lastPipelineActivityMs =
+                                                                System.currentTimeMillis();
+                                                    });
+                                },
+                                /* maxConcurrency */ 1)
                         .observeOn(AndroidSchedulers.mainThread())
-                        .doFinally(
-                                () -> {
-                                    if (pipelineDepth.decrementAndGet() < 0) {
-                                        pipelineDepth.set(0);
-                                    }
-                                    lastPipelineActivityMs = System.currentTimeMillis();
-                                })
                         .subscribe(
                                 bonjourService -> {
                                     if (BROWSE_KEY_HOTSPOT.equals(browseKey)) {
@@ -329,6 +338,44 @@ public class DnssdImpl implements Zeroconf {
         }
     }
 
+    private boolean isPipelineIdle() {
+        long idleMs = System.currentTimeMillis() - lastPipelineActivityMs;
+        int depth = pipelineDepth.get();
+        if (depth > 0 && idleMs >= PIPELINE_STALE_RESET_MS) {
+            Log.w(
+                    TAG,
+                    "Pipeline stale depth="
+                            + depth
+                            + " idleMs="
+                            + idleMs
+                            + " — resetting");
+            pipelineDepth.set(0);
+            depth = 0;
+        }
+        return depth == 0 && idleMs >= PIPELINE_IDLE_MS;
+    }
+
+    private void tryForceReBrowse(String browseKey, int ifIndex, String reason) {
+        if (!discoveryWatching) return;
+        if (!isPipelineIdle()) {
+            Log.d(
+                    TAG,
+                    "Force re-browse deferred "
+                            + reason
+                            + " key="
+                            + browseKey
+                            + " pipeline="
+                            + pipelineDepth.get()
+                            + " idleMs="
+                            + (System.currentTimeMillis() - lastPipelineActivityMs));
+            mainHandler.postDelayed(
+                    () -> tryForceReBrowse(browseKey, ifIndex, reason),
+                    PIPELINE_DEFERRED_RETRY_MS);
+            return;
+        }
+        startBrowse(browseKey, ifIndex, true);
+    }
+
     private void scheduleHotspotProbe(int ifIndex) {
         if (pendingHotspotProbe != null) {
             mainHandler.removeCallbacks(pendingHotspotProbe);
@@ -340,7 +387,7 @@ public class DnssdImpl implements Zeroconf {
                     Integer activeIf = activeBrowseIfIndexes.get(BROWSE_KEY_HOTSPOT);
                     if (activeIf == null || activeIf != ifIndex) return;
                     Log.d(TAG, "Hotspot browse probe ifIndex=" + ifIndex);
-                    startBrowse(BROWSE_KEY_HOTSPOT, ifIndex, true);
+                    tryForceReBrowse(BROWSE_KEY_HOTSPOT, ifIndex, "hotspot-probe");
                 };
         mainHandler.postDelayed(pendingHotspotProbe, HOTSPOT_PROBE_DELAY_MS);
     }
@@ -372,10 +419,9 @@ public class DnssdImpl implements Zeroconf {
                                     TAG,
                                     "Browse stale: anyEventAge="
                                             + anyEventAgeMs
-                                            + "ms — forcing upstream re-browse ifIndex="
-                                            + storedUpstreamIfIndex);
-                            startBrowse(
-                                    BROWSE_KEY_UPSTREAM, storedUpstreamIfIndex, true);
+                                            + "ms ifIndex="
+                                            + storedUpstreamIfIndex
+                                            + " (log-only, no re-browse)");
                         } else {
                             Log.d(
                                     TAG,
@@ -407,7 +453,10 @@ public class DnssdImpl implements Zeroconf {
                                         + "ms ifIndex="
                                         + hotspotWatchdogIfIndex
                                         + " — forcing re-browse");
-                        startBrowse(BROWSE_KEY_HOTSPOT, hotspotWatchdogIfIndex, true);
+                        tryForceReBrowse(
+                                BROWSE_KEY_HOTSPOT,
+                                hotspotWatchdogIfIndex,
+                                "watchdog-hotspot");
                     } else {
                         Log.d(
                                 TAG,
@@ -454,15 +503,28 @@ public class DnssdImpl implements Zeroconf {
         activeBrowseIfIndexes.remove(browseKey);
         if (disposable != null && !disposable.isDisposed()) {
             cancelPendingBrowseDispose(browseKey);
-            Runnable disposeTask =
+            Runnable[] disposeTaskRef = new Runnable[1];
+            disposeTaskRef[0] =
                     () -> {
                         pendingBrowseDisposes.remove(browseKey);
-                        if (!disposable.isDisposed()) {
-                            Log.d(TAG, "Disposing browse key=" + browseKey);
-                            resetPipeline("dispose-" + browseKey);
-                            disposable.dispose();
+                        if (disposable.isDisposed()) return;
+                        if (!isPipelineIdle()) {
+                            Log.d(
+                                    TAG,
+                                    "Dispose deferred key="
+                                            + browseKey
+                                            + " pipeline="
+                                            + pipelineDepth.get());
+                            pendingBrowseDisposes.put(browseKey, disposeTaskRef[0]);
+                            mainHandler.postDelayed(
+                                    disposeTaskRef[0], PIPELINE_DEFERRED_RETRY_MS);
+                            return;
                         }
+                        Log.d(TAG, "Disposing browse key=" + browseKey);
+                        resetPipeline("dispose-" + browseKey);
+                        disposable.dispose();
                     };
+            Runnable disposeTask = disposeTaskRef[0];
             pendingBrowseDisposes.put(browseKey, disposeTask);
             mainHandler.postDelayed(disposeTask, disposeDelayMs);
         }
