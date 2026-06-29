@@ -21,6 +21,8 @@ import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
 
+import javax.annotation.Nullable;
+
 /**
  * RxDnssd is implementation of RxDnssd with embedded DNS-SD  {@link InternalDNSSD}
  */
@@ -29,11 +31,40 @@ public class DNSSDEmbedded extends DNSSD {
     public static final int DEFAULT_STOP_TIMER_DELAY = 5000; //5 sec
 
     private static final String TAG = "DNSSDEmbedded";
+    /** When true, do not tear down nativeLoop between browse restarts in one app session. */
+    private static volatile boolean sessionKeepAlive = false;
+    private static final Handler sMainHandler = new Handler(Looper.getMainLooper());
+    @Nullable private static Runnable pendingShutdown;
+
     private final long mStopTimerDelay;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private Thread mThread;
     private volatile boolean isStarted = false;
     private int serviceCount = 0;
+
+    /** Keep embedded mDNS loop alive while discovery watching (avoids exit/init races). */
+    public static void setSessionKeepAlive(boolean keepAlive) {
+        sessionKeepAlive = keepAlive;
+        sMainHandler.removeCallbacks(DNSSDEmbedded::nativeExit);
+        if (pendingShutdown != null) {
+            sMainHandler.removeCallbacks(pendingShutdown);
+            pendingShutdown = null;
+        }
+    }
+
+    /** Tear down embedded loop after discovery session ends. */
+    public static void shutdownSession() {
+        if (sessionKeepAlive) {
+            return;
+        }
+        sessionKeepAlive = false;
+        sMainHandler.removeCallbacks(DNSSDEmbedded::nativeExit);
+        if (pendingShutdown != null) {
+            sMainHandler.removeCallbacks(pendingShutdown);
+        }
+        pendingShutdown = DNSSDEmbedded::nativeExit;
+        sMainHandler.postDelayed(pendingShutdown, 500);
+    }
 
     public DNSSDEmbedded(Context context) {
         this(context, DEFAULT_STOP_TIMER_DELAY);
@@ -131,8 +162,11 @@ public class DNSSDEmbedded extends DNSSD {
     public void onServiceStopped() {
         super.onServiceStopped();
         serviceCount--;
-        if (serviceCount == 0) {
-            this.exit();
+        if (serviceCount <= 0) {
+            serviceCount = 0;
+            if (!sessionKeepAlive) {
+                this.exit();
+            }
         }
     }
 }

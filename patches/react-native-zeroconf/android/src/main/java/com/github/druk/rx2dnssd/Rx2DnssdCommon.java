@@ -74,14 +74,23 @@ abstract class Rx2DnssdCommon implements Rx2Dnssd {
     @NonNull
     @Override
     public FlowableTransformer<BonjourService, BonjourService> resolve() {
-        return flowable -> flowable.flatMap(bs -> {
-            if ((bs.getFlags() & BonjourService.LOST) == BonjourService.LOST) {
-                return Flowable.just(bs);
-            }
-            return createFlowable(emitter ->
-                    mDNSSD.resolve(bs.getFlags(), bs.getIfIndex(), bs.getServiceName(), bs.getRegType(), bs.getDomain(),
-                            new Rx2ResolveListener(emitter, bs)));
-        });
+        return flowable ->
+                flowable.flatMap(
+                        bs -> {
+                            if ((bs.getFlags() & BonjourService.LOST) == BonjourService.LOST) {
+                                return Flowable.just(bs);
+                            }
+                            return createFlowable(
+                                    emitter ->
+                                            mDNSSD.resolve(
+                                                    bs.getFlags(),
+                                                    bs.getIfIndex(),
+                                                    bs.getServiceName(),
+                                                    bs.getRegType(),
+                                                    bs.getDomain(),
+                                                    new Rx2ResolveListener(emitter, bs)));
+                        },
+                        /* maxConcurrency */ 1);
     }
 
     /**
@@ -93,21 +102,40 @@ abstract class Rx2DnssdCommon implements Rx2Dnssd {
     @Override
     @Deprecated
     public FlowableTransformer<BonjourService, BonjourService> queryRecords() {
-        return flowable -> flowable.flatMap(bs -> {
-            if ((bs.getFlags() & BonjourService.LOST) == BonjourService.LOST) {
-                return Flowable.just(bs);
-            }
-            BonjourService.Builder builder = new BonjourService.Builder(bs);
+        return flowable ->
+                flowable.flatMap(
+                        bs -> {
+                            if ((bs.getFlags() & BonjourService.LOST) == BonjourService.LOST) {
+                                return Flowable.just(bs);
+                            }
+                            BonjourService.Builder builder = new BonjourService.Builder(bs);
 
-            Flowable<BonjourService> flowableV4 = createFlowable(emitter ->
-                    mDNSSD.queryRecord(0, bs.getIfIndex(), bs.getHostname(), NSType.A, NSClass.IN, true,
-                            new Rx2QueryListener(emitter, builder, true)));
-            Flowable<BonjourService> flowableV6 = createFlowable(emitter ->
-                    mDNSSD.queryRecord(0, bs.getIfIndex(), bs.getHostname(), NSType.AAAA, NSClass.IN, true,
-                            new Rx2QueryListener(emitter, builder, true)));
+                            Flowable<BonjourService> flowableV4 =
+                                    createFlowable(
+                                            emitter ->
+                                                    mDNSSD.queryRecord(
+                                                            0,
+                                                            bs.getIfIndex(),
+                                                            bs.getHostname(),
+                                                            NSType.A,
+                                                            NSClass.IN,
+                                                            true,
+                                                            new Rx2QueryListener(emitter, builder, true)));
+                            Flowable<BonjourService> flowableV6 =
+                                    createFlowable(
+                                            emitter ->
+                                                    mDNSSD.queryRecord(
+                                                            0,
+                                                            bs.getIfIndex(),
+                                                            bs.getHostname(),
+                                                            NSType.AAAA,
+                                                            NSClass.IN,
+                                                            true,
+                                                            new Rx2QueryListener(emitter, builder, true)));
 
-            return flowableV4.mergeWith(flowableV6);
-        });
+                            return flowableV4.concatWith(flowableV6);
+                        },
+                        /* maxConcurrency */ 1);
     }
 
     /**
