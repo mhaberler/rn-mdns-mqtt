@@ -48,15 +48,7 @@ public class DnssdImpl implements Zeroconf {
     private static final String DEFAULT_SERVICE_TYPE = "_mqtt-ws._tcp";
     private static final int RESTART_SETTLE_MS = 800;
     private static final int BROWSE_DISPOSE_SETTLE_MS = 2000;
-    /** Extra settle when switching dual-homed browse legs (avoids native SIGSEGV). */
-    private static final int LEG_SWITCH_SETTLE_MS = 3500;
     private static final int HOTSPOT_PROBE_DELAY_MS = 800;
-    /** Periodic swlan0 browse window while dual-homed (one native browse at a time). */
-    private static final int HOTSPOT_ROTATION_INTERVAL_MS = 25_000;
-    private static final int HOTSPOT_ROTATION_RETRY_MS = 3_000;
-    private static final int HOTSPOT_WINDOW_MS = 8_000;
-    /** Wait for resolve pipeline idle before leg switch. */
-    private static final int PIPELINE_IDLE_MS = 1500;
     /** Align with typical ESP mDNS re-announce interval. */
     private static final int HOTSPOT_WATCHDOG_INTERVAL_MS = 15_000;
     /** Force hotspot re-browse when no resolve or browse event this long. */
@@ -126,9 +118,6 @@ public class DnssdImpl implements Zeroconf {
     private int storedHotspotIfIndex = -1;
     private final AtomicInteger pipelineDepth = new AtomicInteger(0);
     private long lastPipelineActivityMs = 0;
-    @Nullable private Runnable hotspotRotationRunnable;
-    @Nullable private Runnable hotspotWindowEndRunnable;
-    private boolean hotspotRotationActive = false;
 
     public void startDiscoveryWatching() {
         if (discoveryWatching) return;
@@ -143,7 +132,6 @@ public class DnssdImpl implements Zeroconf {
         discoveryWatching = false;
         cancelAllPendingBrowseStarts();
         cancelAllPendingBrowseDisposes();
-        stopHotspotRotation();
         stopAllBrowses();
         networkDiscoveryManager.stopWatching();
         releaseMulticastLock();
@@ -178,10 +166,8 @@ public class DnssdImpl implements Zeroconf {
                     lastAnyBrowseEventAtMs = 0;
                     startBrowse(BROWSE_KEY_UPSTREAM, storedUpstreamIfIndex, true);
                 }
-                startHotspotRotation();
                 break;
             case NetworkDiscoveryManager.MODE_HOTSPOT_ONLY:
-                stopHotspotRotation();
                 storedHotspotIfIndex = hotspotIfIndex;
                 stopBrowse(BROWSE_KEY_UPSTREAM);
                 if (hotspotIfIndex > 0) {
@@ -192,7 +178,6 @@ public class DnssdImpl implements Zeroconf {
                 break;
             case NetworkDiscoveryManager.MODE_NONE:
             default:
-                stopHotspotRotation();
                 stopBrowse(BROWSE_KEY_HOTSPOT);
                 storedUpstreamIfIndex =
                         upstreamIfIndex > 0 ? upstreamIfIndex : DNSSD.ALL_INTERFACES;
@@ -323,14 +308,12 @@ public class DnssdImpl implements Zeroconf {
         activeBrowseIfIndexes.put(browseKey, ifIndex);
 
         if (BROWSE_KEY_HOTSPOT.equals(browseKey)) {
-            if (!force && !hotspotRotationActive) {
+            if (!force) {
                 lastHotspotResolveAtMs = 0;
                 lastHotspotBrowseEventAtMs = 0;
                 scheduleHotspotProbe(ifIndex);
             }
-            if (!hotspotRotationActive) {
-                startHotspotWatchdog(ifIndex);
-            }
+            startHotspotWatchdog(ifIndex);
         } else if (BROWSE_KEY_UPSTREAM.equals(browseKey) && storedHotspotIfIndex > 0) {
             if (!force) {
                 lastAnyBrowseEventAtMs = 0;
@@ -339,115 +322,10 @@ public class DnssdImpl implements Zeroconf {
         }
     }
 
-    private boolean isPipelineIdle() {
-        long idleMs = System.currentTimeMillis() - lastPipelineActivityMs;
-        int depth = pipelineDepth.get();
-        if (depth > 0 && idleMs >= 8_000) {
-            Log.w(
-                    TAG,
-                    "Pipeline stale depth="
-                            + depth
-                            + " idleMs="
-                            + idleMs
-                            + " — resetting");
-            pipelineDepth.set(0);
-            depth = 0;
-        }
-        return depth == 0 && idleMs >= PIPELINE_IDLE_MS;
-    }
-
     private void resetPipeline(String reason) {
         int depth = pipelineDepth.getAndSet(0);
         if (depth != 0) {
             Log.d(TAG, "Pipeline reset depth=" + depth + " reason=" + reason);
-        }
-    }
-
-    private void startHotspotRotation() {
-        stopHotspotRotation();
-        if (storedHotspotIfIndex <= 0) return;
-        hotspotRotationRunnable = this::tryOpenHotspotRotationWindow;
-        mainHandler.postDelayed(hotspotRotationRunnable, HOTSPOT_ROTATION_INTERVAL_MS);
-    }
-
-    private void scheduleHotspotRotationRetry() {
-        if (storedHotspotIfIndex <= 0) return;
-        if (hotspotRotationRunnable != null) {
-            mainHandler.removeCallbacks(hotspotRotationRunnable);
-        }
-        hotspotRotationRunnable = this::tryOpenHotspotRotationWindow;
-        mainHandler.postDelayed(hotspotRotationRunnable, HOTSPOT_ROTATION_RETRY_MS);
-    }
-
-    private void tryOpenHotspotRotationWindow() {
-        hotspotRotationRunnable = null;
-        if (!discoveryWatching || hotspotRotationActive) return;
-        if (!isPipelineIdle()) {
-            Log.d(
-                    TAG,
-                    "Hotspot rotation deferred pipeline="
-                            + pipelineDepth.get()
-                            + " idleMs="
-                            + (System.currentTimeMillis() - lastPipelineActivityMs));
-            scheduleHotspotRotationRetry();
-            return;
-        }
-        openHotspotRotationWindow();
-    }
-
-    private void openHotspotRotationWindow() {
-        if (!discoveryWatching || storedHotspotIfIndex <= 0) return;
-        Log.d(TAG, "Hotspot rotation window ifIndex=" + storedHotspotIfIndex);
-        hotspotRotationActive = true;
-        stopHotspotWatchdog();
-        stopBrowse(BROWSE_KEY_UPSTREAM, LEG_SWITCH_SETTLE_MS);
-        scheduleBrowseStart(
-                BROWSE_KEY_HOTSPOT,
-                storedHotspotIfIndex,
-                true,
-                LEG_SWITCH_SETTLE_MS);
-        if (hotspotWindowEndRunnable != null) {
-            mainHandler.removeCallbacks(hotspotWindowEndRunnable);
-        }
-        hotspotWindowEndRunnable = this::tryCloseHotspotRotationWindow;
-        mainHandler.postDelayed(
-                hotspotWindowEndRunnable, LEG_SWITCH_SETTLE_MS + HOTSPOT_WINDOW_MS);
-    }
-
-    private void tryCloseHotspotRotationWindow() {
-        if (!discoveryWatching) {
-            hotspotRotationActive = false;
-            return;
-        }
-        if (!isPipelineIdle()) {
-            Log.d(
-                    TAG,
-                    "Hotspot rotation close deferred pipeline=" + pipelineDepth.get());
-            mainHandler.postDelayed(hotspotWindowEndRunnable, HOTSPOT_ROTATION_RETRY_MS);
-            return;
-        }
-        closeHotspotRotationWindow();
-    }
-
-    private void closeHotspotRotationWindow() {
-        hotspotWindowEndRunnable = null;
-        hotspotRotationActive = false;
-        if (!discoveryWatching) return;
-        Log.d(TAG, "Hotspot rotation window end — resuming upstream ifIndex=" + storedUpstreamIfIndex);
-        stopBrowse(BROWSE_KEY_HOTSPOT, LEG_SWITCH_SETTLE_MS);
-        startBrowse(BROWSE_KEY_UPSTREAM, storedUpstreamIfIndex, true, LEG_SWITCH_SETTLE_MS);
-        startHotspotRotation();
-    }
-
-    private void stopHotspotRotation() {
-        hotspotRotationActive = false;
-        if (hotspotRotationRunnable != null) {
-            mainHandler.removeCallbacks(hotspotRotationRunnable);
-            hotspotRotationRunnable = null;
-        }
-        if (hotspotWindowEndRunnable != null) {
-            mainHandler.removeCallbacks(hotspotWindowEndRunnable);
-            hotspotWindowEndRunnable = null;
         }
     }
 
@@ -475,9 +353,7 @@ public class DnssdImpl implements Zeroconf {
                     if (!discoveryWatching) return;
 
                     if (storedHotspotIfIndex > 0) {
-                        if (hotspotRotationActive) {
-                            if (activeBrowseIfIndexes.get(BROWSE_KEY_HOTSPOT) == null) return;
-                        } else if (activeBrowseIfIndexes.get(BROWSE_KEY_UPSTREAM) == null) {
+                        if (activeBrowseIfIndexes.get(BROWSE_KEY_UPSTREAM) == null) {
                             return;
                         }
                     } else {
@@ -491,7 +367,7 @@ public class DnssdImpl implements Zeroconf {
                                 lastAnyBrowseEventAtMs == 0
                                         ? Long.MAX_VALUE
                                         : now - lastAnyBrowseEventAtMs;
-                        if (anyEventAgeMs >= HOTSPOT_STALE_MS && !hotspotRotationActive) {
+                        if (anyEventAgeMs >= HOTSPOT_STALE_MS) {
                             Log.w(
                                     TAG,
                                     "Browse stale: anyEventAge="
