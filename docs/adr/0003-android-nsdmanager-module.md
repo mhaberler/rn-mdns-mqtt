@@ -1,5 +1,7 @@
 # Android NsdManager via Expo module
 
+**Active** — restored after stock zeroconf failed dual-homed hotspot on S928B ([0005](./0005-revert-stock-react-native-zeroconf.md)).
+
 Supersedes [0002-hybrid-android-discovery.md](./0002-hybrid-android-discovery.md) for Android discovery.
 
 ## Context
@@ -49,3 +51,7 @@ ADR 0002 rejected NsdManager on Samsung AP based on an earlier spike (`onService
 ## Verification
 
 Release build on S928B dual-homed: flat list shows upstream + hotspot brokers; no `DNS-SDEmbedded` / `DnssdImpl` in logcat; refresh clears and repopulates; 5+ min soak without SIGSEGV.
+
+## Alternatives considered
+
+See [0004-stock-react-native-zeroconf-analysis.md](./0004-stock-react-native-zeroconf-analysis.md). Stock `react-native-zeroconf` v0.14.0 already ships an NsdManager backend (default on Android). We keep the local Expo module for parallel watches, no DNSSD in the APK, and Capacitor parity — not because stock NSD is unavailable without a patch.

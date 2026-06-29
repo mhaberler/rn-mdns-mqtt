@@ -44,6 +44,7 @@
     "android": "expo run:android",
     "android-device": "expo run:android --device",
     "android-device-release": "expo run:android --device --variant release",
+    "android-device-debug": "expo run:android --device --variant debug",
     "ios": "expo run:ios",
     "ios-device": "expo run:ios --device",
     "ios-device-release": "expo run:ios --device --configuration Release",

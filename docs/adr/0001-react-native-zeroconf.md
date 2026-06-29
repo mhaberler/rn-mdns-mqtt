@@ -1,21 +1,15 @@
 # Use react-native-zeroconf for mDNS discovery
 
-MQTT Scout RN discovers MQTT brokers via Bonjour/mDNS. Platform backends differ:
+MQTT Scout RN discovers MQTT brokers via Bonjour/mDNS. Platform backends:
 
 | Platform | Backend |
 |----------|---------|
 | **iOS** | `react-native-zeroconf` v0.14.x — Bonjour / NetService |
-| **Android** | Local Expo module [`mqtt-zeroconf-nsd`](../../modules/mqtt-zeroconf-nsd/) — `NsdManager` (Capacitor parity). See [0003-android-nsdmanager-module.md](./0003-android-nsdmanager-module.md). |
+| **Android** | Local Expo module [`mqtt-zeroconf-nsd`](../../modules/mqtt-zeroconf-nsd/) — `NsdManager` parallel watches. See [0003](./0003-android-nsdmanager-module.md). |
+
+Stock `react-native-zeroconf` NSD was tried and **rejected on Android** for dual-homed S928B — WS/WSS rotation stops browse before hotspot resolve completes ([0005](./0005-revert-stock-react-native-zeroconf.md)).
 
 Discovery requires an Expo dev build (prebuild); it does not run in Expo Go.
-
-## Considered options (original Android — superseded for Android)
-
-| Option | Why not (Android) |
-|--------|-------------------|
-| **Embedded DNSSD via patched react-native-zeroconf** | SIGSEGV on Samsung S928B; heavy patch maintenance. **Removed** — see ADR 0003. |
-| **`@inthepocket/react-native-service-discovery`** | NSD-only Turbo Module; no iOS Bonjour parity with our adapter. |
-| **`@dawidzawada/bonjour-zeroconf`** | No TXT in scan results. |
 
 ## Why react-native-zeroconf (iOS)
 
@@ -25,14 +19,12 @@ Discovery requires an Expo dev build (prebuild); it does not run in Expo Go.
 
 ## Why mqtt-zeroconf-nsd (Android)
 
-1. **Production-proven** on same devices as Capacitor sibling (`@mhaberler/capacitor-zeroconf-nsd`).
-2. **No embedded .so** — framework `NsdManager` only; avoids DNSSD crash class.
-3. **Capacitor parity** — parallel `_mqtt-ws` + `_mqtt-wss` watches; hard refresh on pull-to-refresh.
+1. **Dual-homed** — parallel `_mqtt-ws` + `_mqtt-wss` without rotation stop; hotspot AP brokers resolve on S928B.
+2. **No embedded DNSSD** — framework `NsdManager` only.
+3. **Capacitor parity** — hard refresh on pull-to-refresh.
 
 ## Consequences
 
-- Thin **adapter** ([`src/lib/zeroconf-adapter.ts`](../../src/lib/zeroconf-adapter.ts)) maps discovery events to `ServiceEntry`.
-- **iOS:** `NSBonjourServices`, `NSLocalNetworkUsageDescription`, multicast entitlement.
-- **Android:** Wi‑Fi multicast permissions (already in `app.json`); `react-native-zeroconf` excluded from Android autolinking via [`react-native.config.js`](../../react-native.config.js).
-- Rebuild dev client after adding/updating `mqtt-zeroconf-nsd`.
-- Dual-homed DNSSD design ([0002](./0002-hybrid-android-discovery.md)) **superseded on Android** by ADR 0003.
+- [`src/lib/zeroconf-adapter.ts`](../../src/lib/zeroconf-adapter.ts): Android → `mqtt-zeroconf-nsd`; iOS → `react-native-zeroconf`.
+- [`react-native.config.js`](../../react-native.config.js): exclude `react-native-zeroconf` on Android.
+- Rebuild dev client after native module changes.
