@@ -2,13 +2,8 @@ import { AppState, Platform } from 'react-native';
 
 import { discoveredBrokerKey } from '@/lib/discovered-broker-key';
 import {
-  canRefreshHotspotDiscovery,
-  isHotspotDiscoveryActive,
-  isHotspotPurgeSignal,
-  purgeDiscoveredBySegment,
   restartDiscoveryModeScan,
   subscribeDiscoveryModeChanges,
-  subscribeHotspotPurged,
   useDiscoveryMode,
 } from '@/lib/discovery-mode';
 import { createExternalStore } from '@/lib/external-store';
@@ -29,20 +24,7 @@ let lifecycleRegistered = false;
 let zeroconfSubscribed = false;
 let discoveryModeHandlerRegistered = false;
 
-function purgeHotspotBrokers() {
-  discoveredStore.setState((current) => purgeDiscoveredBySegment(current, 'hotspot'));
-}
-
 function onServiceEvent(action: 'added' | 'removed' | 'resolved', service: ServiceEntry) {
-  if (isHotspotPurgeSignal(service)) {
-    purgeHotspotBrokers();
-    return;
-  }
-
-  if (service.discoverySegment === 'hotspot' && !isHotspotDiscoveryActive()) {
-    return;
-  }
-
   const key = discoveredBrokerKey(service);
 
   if (action === 'added') {
@@ -56,7 +38,6 @@ function onServiceEvent(action: 'added' | 'removed' | 'resolved', service: Servi
           discovered: true,
           resolved: false,
           source: 'discovered',
-          discoverySegment: service.discoverySegment ?? 'upstream',
         },
       };
     });
@@ -88,7 +69,6 @@ function onServiceEvent(action: 'added' | 'removed' | 'resolved', service: Servi
           discovered: true,
           resolved: true,
           source: 'discovered',
-          discoverySegment: service.discoverySegment ?? existing?.discoverySegment ?? 'upstream',
           txtRecord: service.txtRecord || existing?.txtRecord || {},
           ipv4Addresses: service.ipv4Addresses || existing?.ipv4Addresses || [],
           ipv6Addresses: service.ipv6Addresses || existing?.ipv6Addresses || [],
@@ -111,28 +91,18 @@ export function stopScan() {
 }
 
 export async function refreshDiscovery() {
-  const hotspotActive = canRefreshHotspotDiscovery();
-
-  if (hotspotActive) {
-    discoveredStore.setState((current) => purgeDiscoveredBySegment(current, 'hotspot'));
-    if (isWatching) {
-      restartDiscoveryModeScan();
-    } else {
-      startScan();
-    }
-    return;
-  }
-
-  const upstreamSoft = canSoftRefreshDiscovery();
-  if (upstreamSoft) {
-    discoveredStore.setState((current) => purgeDiscoveredBySegment(current, 'hotspot'));
+  if (canSoftRefreshDiscovery()) {
     softRefreshBrokerDiscovery();
     return;
   }
 
   discoveredStore.setState({});
   if (isWatching) {
-    restartAllBrokerScans();
+    if (Platform.OS === 'android') {
+      restartDiscoveryModeScan();
+    } else {
+      restartAllBrokerScans();
+    }
   } else {
     startScan();
   }
@@ -179,16 +149,7 @@ function ensureZeroconfSubscription() {
 function ensureDiscoveryModeHandler() {
   if (discoveryModeHandlerRegistered || Platform.OS !== 'android') return;
   discoveryModeHandlerRegistered = true;
-
-  subscribeDiscoveryModeChanges((mode) => {
-    if (mode === 'none') {
-      purgeHotspotBrokers();
-    }
-  });
-
-  subscribeHotspotPurged(() => {
-    purgeHotspotBrokers();
-  });
+  subscribeDiscoveryModeChanges(() => {});
 }
 
 export function useMqttDiscovery() {
@@ -198,8 +159,6 @@ export function useMqttDiscovery() {
 
   const discoveredBrokers = discoveredStore.useStore();
   const discoveryMode = useDiscoveryMode();
-  const hotspotDiscoveryActive =
-    discoveryMode === 'hotspotOnly' || discoveryMode === 'dualHomed';
 
   return {
     discoveredBrokers,
@@ -207,8 +166,7 @@ export function useMqttDiscovery() {
     refresh: refreshDiscovery,
     startScan,
     stopScan,
-    hotspotDiscoveryActive,
-    isHotspotDiscoveryActive,
+    discoveryMode,
   };
 }
 

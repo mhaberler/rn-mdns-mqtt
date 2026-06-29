@@ -63,7 +63,7 @@ export function stopDiscoveryModeWatching() {
 }
 
 export function restartDiscoveryModeScan() {
-  if (!watching || !isHotspotDiscoveryActive()) return;
+  if (!watching) return;
   restartNativeDiscoveryScan();
 }
 

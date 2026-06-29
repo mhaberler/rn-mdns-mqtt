@@ -5,12 +5,11 @@ import { pickConnectHost } from '@/lib/broker-host';
 import { hasDevClientNativeModules } from '@/lib/native-modules';
 import { notifyDiscoveryScanActive } from '@/lib/discovery-mode';
 import {
-  BROWSE_KEY_HOTSPOT,
   restartNativeDiscoveryScan,
   stopNativeDiscoveryWatching,
 } from '@/lib/zeroconf-native';
 
-import type { DiscoverySegment, ServiceEntry } from '@/types/broker';
+import type { ServiceEntry } from '@/types/broker';
 import {
   BROKER_SERVICE_TYPES,
   removeLeadingAndTrailingDots,
@@ -71,10 +70,6 @@ function splitAddresses(addresses: string[] | undefined): { ipv4: string[]; ipv6
   return { ipv4, ipv6 };
 }
 
-function segmentFromBrowseKey(browseKey?: string): DiscoverySegment {
-  return browseKey === BROWSE_KEY_HOTSPOT ? 'hotspot' : 'upstream';
-}
-
 function mapService(
   service: ServiceWithBrowseKey,
   action: ZeroconfDiscoveryAction,
@@ -99,7 +94,6 @@ function mapService(
     discovered: true,
     resolved: action === 'resolved' && port > 0,
     source: 'discovered',
-    discoverySegment: segmentFromBrowseKey(service.browseKey),
     txtRecord: service.txt ?? {},
     ipv4Addresses: ipv4,
     ipv6Addresses: ipv6,
@@ -280,7 +274,6 @@ function wireEvents() {
           discovered: true,
           resolved: false,
           source: 'discovered',
-          discoverySegment: segmentFromBrowseKey(browseKey),
         },
       });
       return;

@@ -47,3 +47,16 @@ Privacy policy: `PRIVACY.md` in this repo.
 - [ ] Run `npm install` (applies dual-DNSSD zeroconf patch) before release build
 - [ ] Test hotspot-only Android: enable phone hotspot, connect IoT device (no upstream WiFi) — **Hotspot** subsection shows broker (may take ~20s on Samsung AP)
 - [ ] Test dual-homed Android: WiFi client + hotspot — both Upstream WiFi and Hotspot subsections; hotspot clears when tethering off
+- [ ] **Samsung BackToHome off** during discovery tests (see below)
+
+### Samsung BackToHome (known quirk)
+
+Samsung **BackToHome** (remote access / mesh leg on `192.168.216.x`) can break **upstream** mDNS on dual-homed phones:
+
+- `NetworkDiscovery` reports upstream CIDR like `192.168.216.4/32` (host-only prefix)
+- Subnet filter then drops every LAN broker; browse may run but **Upstream WiFi** stays empty
+- WiFi capability churn can also restart browse repeatedly while BackToHome is active
+
+**For testing and support:** disable BackToHome, confirm normal upstream CIDR (e.g. `/24`), then rescan. Hotspot leg is unaffected.
+
+Observed on Galaxy S928B (SM-S928B), Android 15, dual-homed DNSSD patch.

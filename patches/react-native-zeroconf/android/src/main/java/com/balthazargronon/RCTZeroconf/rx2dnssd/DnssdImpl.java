@@ -8,7 +8,6 @@ import android.os.Looper;
 import android.util.Log;
 
 import com.balthazargronon.RCTZeroconf.NetworkDiscoveryManager;
-import com.balthazargronon.RCTZeroconf.Ipv4Subnet;
 import com.balthazargronon.RCTZeroconf.Zeroconf;
 import com.balthazargronon.RCTZeroconf.ZeroconfModule;
 import com.facebook.react.bridge.ReactApplicationContext;
@@ -31,6 +30,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import javax.annotation.Nullable;
 
@@ -47,15 +47,20 @@ public class DnssdImpl implements Zeroconf {
     private static final String TAG = "DnssdImpl";
     private static final String DEFAULT_SERVICE_TYPE = "_mqtt-ws._tcp";
     private static final int RESTART_SETTLE_MS = 800;
-    private static final int BROWSE_DISPOSE_SETTLE_MS = 600;
+    private static final int BROWSE_DISPOSE_SETTLE_MS = 2000;
+    /** Extra settle when switching dual-homed browse legs (avoids native SIGSEGV). */
+    private static final int LEG_SWITCH_SETTLE_MS = 3500;
     private static final int HOTSPOT_PROBE_DELAY_MS = 800;
+    /** Periodic swlan0 browse window while dual-homed (one native browse at a time). */
+    private static final int HOTSPOT_ROTATION_INTERVAL_MS = 25_000;
+    private static final int HOTSPOT_ROTATION_RETRY_MS = 3_000;
+    private static final int HOTSPOT_WINDOW_MS = 8_000;
+    /** Wait for resolve pipeline idle before leg switch. */
+    private static final int PIPELINE_IDLE_MS = 1500;
     /** Align with typical ESP mDNS re-announce interval. */
     private static final int HOTSPOT_WATCHDOG_INTERVAL_MS = 15_000;
     /** Force hotspot re-browse when no resolve or browse event this long. */
     private static final int HOTSPOT_STALE_MS = 20_000;
-    /** Time-slice swlan0 browse while dual-homed (one native browse at a time). */
-    private static final int HOTSPOT_ROTATION_MS = 20_000;
-    private static final int HOTSPOT_WINDOW_MS = 5_000;
     private static final Scheduler DNSSD_SCHEDULER = Schedulers.single();
 
     private final Rx2Dnssd rxDnssd;
@@ -69,6 +74,7 @@ public class DnssdImpl implements Zeroconf {
     private final Map<String, Disposable> browseDisposables = new HashMap<>();
     private final Map<String, Integer> activeBrowseIfIndexes = new HashMap<>();
     private final Map<String, Runnable> pendingBrowseStarts = new HashMap<>();
+    private final Map<String, Runnable> pendingBrowseDisposes = new HashMap<>();
 
     @Nullable
     private WifiManager.MulticastLock multicastLock;
@@ -116,10 +122,10 @@ public class DnssdImpl implements Zeroconf {
     private long lastHotspotResolveAtMs = 0;
     private long lastHotspotBrowseEventAtMs = 0;
     private long lastAnyBrowseEventAtMs = 0;
-    /** Dual-homed uses one ALL_INTERFACES browse; segment by resolved IP. */
-    private boolean dualHomedSingleBrowse = false;
     private int storedUpstreamIfIndex = DNSSD.ALL_INTERFACES;
     private int storedHotspotIfIndex = -1;
+    private final AtomicInteger pipelineDepth = new AtomicInteger(0);
+    private long lastPipelineActivityMs = 0;
     @Nullable private Runnable hotspotRotationRunnable;
     @Nullable private Runnable hotspotWindowEndRunnable;
     private boolean hotspotRotationActive = false;
@@ -136,6 +142,7 @@ public class DnssdImpl implements Zeroconf {
         if (!discoveryWatching) return;
         discoveryWatching = false;
         cancelAllPendingBrowseStarts();
+        cancelAllPendingBrowseDisposes();
         stopHotspotRotation();
         stopAllBrowses();
         networkDiscoveryManager.stopWatching();
@@ -162,19 +169,20 @@ public class DnssdImpl implements Zeroconf {
 
         switch (mode) {
             case NetworkDiscoveryManager.MODE_DUAL_HOMED:
-                dualHomedSingleBrowse = true;
                 storedUpstreamIfIndex =
                         upstreamIfIndex > 0 ? upstreamIfIndex : DNSSD.ALL_INTERFACES;
                 storedHotspotIfIndex = hotspotIfIndex;
                 stopBrowse(BROWSE_KEY_HOTSPOT);
-                stopHotspotRotation();
-                lastAnyBrowseEventAtMs = 0;
-                startBrowse(BROWSE_KEY_UPSTREAM, storedUpstreamIfIndex, true);
+                Integer activeUpstream = activeBrowseIfIndexes.get(BROWSE_KEY_UPSTREAM);
+                if (activeUpstream == null || activeUpstream != storedUpstreamIfIndex) {
+                    lastAnyBrowseEventAtMs = 0;
+                    startBrowse(BROWSE_KEY_UPSTREAM, storedUpstreamIfIndex, true);
+                }
                 startHotspotRotation();
                 break;
             case NetworkDiscoveryManager.MODE_HOTSPOT_ONLY:
-                dualHomedSingleBrowse = false;
                 stopHotspotRotation();
+                storedHotspotIfIndex = hotspotIfIndex;
                 stopBrowse(BROWSE_KEY_UPSTREAM);
                 if (hotspotIfIndex > 0) {
                     startBrowse(BROWSE_KEY_HOTSPOT, hotspotIfIndex);
@@ -184,12 +192,11 @@ public class DnssdImpl implements Zeroconf {
                 break;
             case NetworkDiscoveryManager.MODE_NONE:
             default:
-                dualHomedSingleBrowse = false;
                 stopHotspotRotation();
                 stopBrowse(BROWSE_KEY_HOTSPOT);
-                zeroconfModule.sendEvent(
-                        reactApplicationContext, ZeroconfModule.EVENT_HOTSPOT_PURGED, null);
-                startBrowse(BROWSE_KEY_UPSTREAM, DNSSD.ALL_INTERFACES);
+                storedUpstreamIfIndex =
+                        upstreamIfIndex > 0 ? upstreamIfIndex : DNSSD.ALL_INTERFACES;
+                startBrowse(BROWSE_KEY_UPSTREAM, storedUpstreamIfIndex);
                 break;
         }
     }
@@ -199,15 +206,22 @@ public class DnssdImpl implements Zeroconf {
     }
 
     private void startBrowse(String browseKey, int ifIndex, boolean force) {
+        startBrowse(browseKey, ifIndex, force, BROWSE_DISPOSE_SETTLE_MS);
+    }
+
+    private void startBrowse(String browseKey, int ifIndex, boolean force, long settleMs) {
         Integer currentIfIndex = activeBrowseIfIndexes.get(browseKey);
         if (!force && currentIfIndex != null && currentIfIndex == ifIndex) {
             Disposable existing = browseDisposables.get(browseKey);
             if (existing != null && !existing.isDisposed()) return;
         }
-        boolean needsSettle = force || browseDisposables.containsKey(browseKey);
-        stopBrowse(browseKey);
+        boolean needsSettle =
+                force
+                        || browseDisposables.containsKey(browseKey)
+                        || pendingBrowseDisposes.containsKey(browseKey);
+        stopBrowse(browseKey, settleMs);
         if (needsSettle) {
-            scheduleBrowseStart(browseKey, ifIndex, force, BROWSE_DISPOSE_SETTLE_MS);
+            scheduleBrowseStart(browseKey, ifIndex, force, settleMs);
         } else {
             beginBrowseSubscription(browseKey, ifIndex, force);
         }
@@ -249,44 +263,48 @@ public class DnssdImpl implements Zeroconf {
                         + ifIndex
                         + " type="
                         + pendingScanType
-                        + (dualHomedSingleBrowse ? " (dual-homed single)" : "")
                         + (force ? " (forced)" : ""));
 
         Disposable disposable =
                 rxDnssd
                         .browseOnInterface(pendingScanType, pendingScanDomain, ifIndex)
-                        .compose(rxDnssd.resolve())
-                        .compose(rxDnssd.queryRecords())
-                        .subscribeOn(DNSSD_SCHEDULER)
-                        .observeOn(AndroidSchedulers.mainThread())
-                        .subscribe(
-                                bonjourService -> {
-                                    if (dualHomedSingleBrowse
-                                            && BROWSE_KEY_UPSTREAM.equals(browseKey)) {
-                                        lastAnyBrowseEventAtMs = System.currentTimeMillis();
-                                    }
-                                    String effectiveBrowseKey =
-                                            resolveBrowseKey(bonjourService, browseKey);
-                                    if (BROWSE_KEY_HOTSPOT.equals(effectiveBrowseKey)) {
-                                        lastHotspotBrowseEventAtMs = System.currentTimeMillis();
-                                    }
-                                    String mismatchReason =
-                                            subnetMismatchReason(
-                                                    bonjourService, browseKey, effectiveBrowseKey);
-                                    if (mismatchReason != null) {
-                                        if (dualHomedSingleBrowse
-                                                && BROWSE_KEY_UPSTREAM.equals(browseKey)) {
-                                            lastAnyBrowseEventAtMs = System.currentTimeMillis();
-                                        }
-                                        logSubnetMismatch(
-                                                bonjourService, effectiveBrowseKey, mismatchReason);
+                        .doOnNext(
+                                bs -> {
+                                    if ((bs.getFlags() & BonjourService.LOST) == BonjourService.LOST) {
                                         return;
                                     }
-                                    if (BROWSE_KEY_HOTSPOT.equals(effectiveBrowseKey)) {
+                                    pipelineDepth.incrementAndGet();
+                                    lastPipelineActivityMs = System.currentTimeMillis();
+                                    lastAnyBrowseEventAtMs = lastPipelineActivityMs;
+                                    Log.d(
+                                            TAG,
+                                            "Browse found key="
+                                                    + browseKey
+                                                    + " name="
+                                                    + bs.getServiceName()
+                                                    + " ifIndex="
+                                                    + bs.getIfIndex()
+                                                    + " pipeline="
+                                                    + pipelineDepth.get());
+                                })
+                        .compose(rxDnssd.resolve())
+                        .compose(rxDnssd.queryIPV4Records())
+                        .observeOn(AndroidSchedulers.mainThread())
+                        .doFinally(
+                                () -> {
+                                    if (pipelineDepth.decrementAndGet() < 0) {
+                                        pipelineDepth.set(0);
+                                    }
+                                    lastPipelineActivityMs = System.currentTimeMillis();
+                                })
+                        .subscribe(
+                                bonjourService -> {
+                                    if (BROWSE_KEY_HOTSPOT.equals(browseKey)) {
+                                        lastHotspotBrowseEventAtMs = System.currentTimeMillis();
                                         lastHotspotResolveAtMs = System.currentTimeMillis();
                                     }
                                     WritableMap service =
-                                            serviceInfoToMap(bonjourService, effectiveBrowseKey);
+                                            serviceInfoToMap(bonjourService, browseKey);
                                     Log.d(TAG, service.toString());
                                     zeroconfModule.sendEvent(
                                             reactApplicationContext,
@@ -313,49 +331,112 @@ public class DnssdImpl implements Zeroconf {
             if (!hotspotRotationActive) {
                 startHotspotWatchdog(ifIndex);
             }
-        } else if (dualHomedSingleBrowse && BROWSE_KEY_UPSTREAM.equals(browseKey)) {
+        } else if (BROWSE_KEY_UPSTREAM.equals(browseKey) && storedHotspotIfIndex > 0) {
             if (!force) {
-                lastHotspotResolveAtMs = 0;
-                lastHotspotBrowseEventAtMs = 0;
                 lastAnyBrowseEventAtMs = 0;
             }
             startHotspotWatchdog(storedUpstreamIfIndex);
         }
     }
 
+    private boolean isPipelineIdle() {
+        long idleMs = System.currentTimeMillis() - lastPipelineActivityMs;
+        int depth = pipelineDepth.get();
+        if (depth > 0 && idleMs >= 8_000) {
+            Log.w(
+                    TAG,
+                    "Pipeline stale depth="
+                            + depth
+                            + " idleMs="
+                            + idleMs
+                            + " — resetting");
+            pipelineDepth.set(0);
+            depth = 0;
+        }
+        return depth == 0 && idleMs >= PIPELINE_IDLE_MS;
+    }
+
+    private void resetPipeline(String reason) {
+        int depth = pipelineDepth.getAndSet(0);
+        if (depth != 0) {
+            Log.d(TAG, "Pipeline reset depth=" + depth + " reason=" + reason);
+        }
+    }
+
     private void startHotspotRotation() {
         stopHotspotRotation();
-        if (!dualHomedSingleBrowse || storedHotspotIfIndex <= 0) return;
-        hotspotRotationRunnable =
-                () -> {
-                    if (!discoveryWatching || !dualHomedSingleBrowse) return;
-                    openHotspotRotationWindow();
-                };
-        mainHandler.postDelayed(hotspotRotationRunnable, HOTSPOT_ROTATION_MS);
+        if (storedHotspotIfIndex <= 0) return;
+        hotspotRotationRunnable = this::tryOpenHotspotRotationWindow;
+        mainHandler.postDelayed(hotspotRotationRunnable, HOTSPOT_ROTATION_INTERVAL_MS);
+    }
+
+    private void scheduleHotspotRotationRetry() {
+        if (storedHotspotIfIndex <= 0) return;
+        if (hotspotRotationRunnable != null) {
+            mainHandler.removeCallbacks(hotspotRotationRunnable);
+        }
+        hotspotRotationRunnable = this::tryOpenHotspotRotationWindow;
+        mainHandler.postDelayed(hotspotRotationRunnable, HOTSPOT_ROTATION_RETRY_MS);
+    }
+
+    private void tryOpenHotspotRotationWindow() {
+        hotspotRotationRunnable = null;
+        if (!discoveryWatching || hotspotRotationActive) return;
+        if (!isPipelineIdle()) {
+            Log.d(
+                    TAG,
+                    "Hotspot rotation deferred pipeline="
+                            + pipelineDepth.get()
+                            + " idleMs="
+                            + (System.currentTimeMillis() - lastPipelineActivityMs));
+            scheduleHotspotRotationRetry();
+            return;
+        }
+        openHotspotRotationWindow();
     }
 
     private void openHotspotRotationWindow() {
-        if (!discoveryWatching || !dualHomedSingleBrowse || storedHotspotIfIndex <= 0) return;
+        if (!discoveryWatching || storedHotspotIfIndex <= 0) return;
         Log.d(TAG, "Hotspot rotation window ifIndex=" + storedHotspotIfIndex);
         hotspotRotationActive = true;
         stopHotspotWatchdog();
-        stopBrowse(BROWSE_KEY_UPSTREAM);
+        stopBrowse(BROWSE_KEY_UPSTREAM, LEG_SWITCH_SETTLE_MS);
         scheduleBrowseStart(
-                BROWSE_KEY_HOTSPOT, storedHotspotIfIndex, true, BROWSE_DISPOSE_SETTLE_MS);
+                BROWSE_KEY_HOTSPOT,
+                storedHotspotIfIndex,
+                true,
+                LEG_SWITCH_SETTLE_MS);
         if (hotspotWindowEndRunnable != null) {
             mainHandler.removeCallbacks(hotspotWindowEndRunnable);
         }
-        hotspotWindowEndRunnable =
-                () -> {
-                    hotspotWindowEndRunnable = null;
-                    hotspotRotationActive = false;
-                    if (!discoveryWatching || !dualHomedSingleBrowse) return;
-                    stopBrowse(BROWSE_KEY_HOTSPOT);
-                    startBrowse(BROWSE_KEY_UPSTREAM, storedUpstreamIfIndex, true);
-                    startHotspotRotation();
-                };
+        hotspotWindowEndRunnable = this::tryCloseHotspotRotationWindow;
         mainHandler.postDelayed(
-                hotspotWindowEndRunnable, BROWSE_DISPOSE_SETTLE_MS + HOTSPOT_WINDOW_MS);
+                hotspotWindowEndRunnable, LEG_SWITCH_SETTLE_MS + HOTSPOT_WINDOW_MS);
+    }
+
+    private void tryCloseHotspotRotationWindow() {
+        if (!discoveryWatching) {
+            hotspotRotationActive = false;
+            return;
+        }
+        if (!isPipelineIdle()) {
+            Log.d(
+                    TAG,
+                    "Hotspot rotation close deferred pipeline=" + pipelineDepth.get());
+            mainHandler.postDelayed(hotspotWindowEndRunnable, HOTSPOT_ROTATION_RETRY_MS);
+            return;
+        }
+        closeHotspotRotationWindow();
+    }
+
+    private void closeHotspotRotationWindow() {
+        hotspotWindowEndRunnable = null;
+        hotspotRotationActive = false;
+        if (!discoveryWatching) return;
+        Log.d(TAG, "Hotspot rotation window end — resuming upstream ifIndex=" + storedUpstreamIfIndex);
+        stopBrowse(BROWSE_KEY_HOTSPOT, LEG_SWITCH_SETTLE_MS);
+        startBrowse(BROWSE_KEY_UPSTREAM, storedUpstreamIfIndex, true, LEG_SWITCH_SETTLE_MS);
+        startHotspotRotation();
     }
 
     private void stopHotspotRotation() {
@@ -393,23 +474,27 @@ public class DnssdImpl implements Zeroconf {
                 () -> {
                     if (!discoveryWatching) return;
 
-                    if (dualHomedSingleBrowse) {
-                        if (activeBrowseIfIndexes.get(BROWSE_KEY_UPSTREAM) == null) return;
+                    if (storedHotspotIfIndex > 0) {
+                        if (hotspotRotationActive) {
+                            if (activeBrowseIfIndexes.get(BROWSE_KEY_HOTSPOT) == null) return;
+                        } else if (activeBrowseIfIndexes.get(BROWSE_KEY_UPSTREAM) == null) {
+                            return;
+                        }
                     } else {
                         Integer activeIf = activeBrowseIfIndexes.get(BROWSE_KEY_HOTSPOT);
                         if (activeIf == null || activeIf != hotspotWatchdogIfIndex) return;
                     }
 
                     long now = System.currentTimeMillis();
-                    if (dualHomedSingleBrowse) {
+                    if (storedHotspotIfIndex > 0) {
                         long anyEventAgeMs =
                                 lastAnyBrowseEventAtMs == 0
                                         ? Long.MAX_VALUE
                                         : now - lastAnyBrowseEventAtMs;
-                        if (anyEventAgeMs >= HOTSPOT_STALE_MS) {
+                        if (anyEventAgeMs >= HOTSPOT_STALE_MS && !hotspotRotationActive) {
                             Log.w(
                                     TAG,
-                                    "Dual-homed browse stale: anyEventAge="
+                                    "Browse stale: anyEventAge="
                                             + anyEventAgeMs
                                             + "ms — forcing upstream re-browse ifIndex="
                                             + storedUpstreamIfIndex);
@@ -418,7 +503,7 @@ public class DnssdImpl implements Zeroconf {
                         } else {
                             Log.d(
                                     TAG,
-                                    "Dual-homed browse ok: anyEventAge="
+                                    "Browse ok: anyEventAge="
                                             + anyEventAgeMs
                                             + "ms ifIndex="
                                             + storedUpstreamIfIndex);
@@ -462,7 +547,7 @@ public class DnssdImpl implements Zeroconf {
         scheduleHotspotWatchdogTick();
     }
 
-    private void scheduleHotspotWatchdogTick_DUP_REMOVE() {
+    private void scheduleHotspotWatchdogTick() {
         if (hotspotWatchdogRunnable == null) return;
         mainHandler.removeCallbacks(hotspotWatchdogRunnable);
         mainHandler.postDelayed(hotspotWatchdogRunnable, HOTSPOT_WATCHDOG_INTERVAL_MS);
@@ -477,9 +562,12 @@ public class DnssdImpl implements Zeroconf {
     }
 
     private void stopBrowse(String browseKey) {
+        stopBrowse(browseKey, BROWSE_DISPOSE_SETTLE_MS);
+    }
+
+    private void stopBrowse(String browseKey, long disposeDelayMs) {
         cancelPendingBrowseStart(browseKey);
-        if (BROWSE_KEY_HOTSPOT.equals(browseKey)
-                || (BROWSE_KEY_UPSTREAM.equals(browseKey) && dualHomedSingleBrowse)) {
+        if (BROWSE_KEY_HOTSPOT.equals(browseKey) || BROWSE_KEY_UPSTREAM.equals(browseKey)) {
             if (pendingHotspotProbe != null) {
                 mainHandler.removeCallbacks(pendingHotspotProbe);
                 pendingHotspotProbe = null;
@@ -487,10 +575,34 @@ public class DnssdImpl implements Zeroconf {
             stopHotspotWatchdog();
         }
         Disposable disposable = browseDisposables.remove(browseKey);
-        if (disposable != null && !disposable.isDisposed()) {
-            disposable.dispose();
-        }
         activeBrowseIfIndexes.remove(browseKey);
+        if (disposable != null && !disposable.isDisposed()) {
+            cancelPendingBrowseDispose(browseKey);
+            Runnable disposeTask =
+                    () -> {
+                        pendingBrowseDisposes.remove(browseKey);
+                        if (!disposable.isDisposed()) {
+                            Log.d(TAG, "Disposing browse key=" + browseKey);
+                            resetPipeline("dispose-" + browseKey);
+                            disposable.dispose();
+                        }
+                    };
+            pendingBrowseDisposes.put(browseKey, disposeTask);
+            mainHandler.postDelayed(disposeTask, disposeDelayMs);
+        }
+    }
+
+    private void cancelPendingBrowseDispose(String browseKey) {
+        Runnable pending = pendingBrowseDisposes.remove(browseKey);
+        if (pending != null) {
+            mainHandler.removeCallbacks(pending);
+        }
+    }
+
+    private void cancelAllPendingBrowseDisposes() {
+        for (String key : new ArrayList<>(pendingBrowseDisposes.keySet())) {
+            cancelPendingBrowseDispose(key);
+        }
     }
 
     private void stopAllBrowses() {
@@ -520,138 +632,6 @@ public class DnssdImpl implements Zeroconf {
 
     private String getServiceType(String type, String protocol) {
         return String.format("_%s._%s", type, protocol);
-    }
-
-    private static List<String> collectIpv4(BonjourService service) {
-        List<String> ipv4 = new ArrayList<>();
-        for (InetAddress address : service.getInetAddresses()) {
-            if (address instanceof Inet4Address) {
-                ipv4.add(address.getHostAddress());
-            }
-        }
-        return ipv4;
-    }
-
-    private String resolveBrowseKey(BonjourService service, String browseKey) {
-        if (!dualHomedSingleBrowse) {
-            return browseKey;
-        }
-        List<String> ipv4 = collectIpv4(service);
-        String hotspotCidr = networkDiscoveryManager.getHotspotCidr();
-        if (hotspotCidr != null) {
-            for (String ip : ipv4) {
-                if (Ipv4Subnet.contains(hotspotCidr, ip)) {
-                    return BROWSE_KEY_HOTSPOT;
-                }
-            }
-        }
-        return BROWSE_KEY_UPSTREAM;
-    }
-
-    /**
-     * @return null when service matches browse leg subnet; otherwise human-readable reason.
-     */
-    @Nullable
-    private String subnetMismatchReason(
-            BonjourService service, String browseKey, String effectiveBrowseKey) {
-        List<String> ipv4 = collectIpv4(service);
-        String hotspotCidr = networkDiscoveryManager.getHotspotCidr();
-        String upstreamCidr = networkDiscoveryManager.getUpstreamCidr();
-
-        if (dualHomedSingleBrowse) {
-            if (ipv4.isEmpty()) {
-                return BROWSE_KEY_UPSTREAM.equals(effectiveBrowseKey)
-                        ? null
-                        : "no IPv4 addresses for hotspot segment (hostname="
-                                + service.getHostname()
-                                + ")";
-            }
-            for (String ip : ipv4) {
-                if (hotspotCidr != null && Ipv4Subnet.contains(hotspotCidr, ip)) return null;
-                if (upstreamCidr != null && Ipv4Subnet.contains(upstreamCidr, ip)) return null;
-            }
-            return "ipv4="
-                    + ipv4
-                    + " not in dual-homed subnets (hotspot="
-                    + hotspotCidr
-                    + " upstream="
-                    + upstreamCidr
-                    + ")";
-        }
-
-        if (ipv4.isEmpty()) {
-            if (BROWSE_KEY_UPSTREAM.equals(browseKey)) return null;
-            return "no IPv4 addresses (hostname="
-                    + service.getHostname()
-                    + ", expected hotspotCidr="
-                    + hotspotCidr
-                    + ")";
-        }
-
-        if (BROWSE_KEY_HOTSPOT.equals(browseKey)) {
-            if (hotspotCidr == null) {
-                return "hotspotCidr unknown, ipv4=" + ipv4;
-            }
-            for (String ip : ipv4) {
-                if (Ipv4Subnet.contains(hotspotCidr, ip)) return null;
-            }
-            return "ipv4="
-                    + ipv4
-                    + " not in hotspotCidr="
-                    + hotspotCidr
-                    + " (hostname="
-                    + service.getHostname()
-                    + ")";
-        }
-
-        if (hotspotCidr != null) {
-            for (String ip : ipv4) {
-                if (!Ipv4Subnet.contains(hotspotCidr, ip)) return null;
-            }
-            return "ipv4="
-                    + ipv4
-                    + " only on hotspotCidr="
-                    + hotspotCidr
-                    + " (hostname="
-                    + service.getHostname()
-                    + ")";
-        }
-
-        if (upstreamCidr != null) {
-            for (String ip : ipv4) {
-                if (Ipv4Subnet.contains(upstreamCidr, ip)) return null;
-            }
-            return "ipv4="
-                    + ipv4
-                    + " not in upstreamCidr="
-                    + upstreamCidr
-                    + " (hostname="
-                    + service.getHostname()
-                    + ")";
-        }
-        return null;
-    }
-
-    private void logSubnetMismatch(
-            BonjourService service, String browseKey, String reason) {
-        Log.d(
-                TAG,
-                "Skipping key="
-                        + browseKey
-                        + " name="
-                        + service.getServiceName()
-                        + " port="
-                        + service.getPort()
-                        + " hostname="
-                        + service.getHostname()
-                        + " ipv4="
-                        + collectIpv4(service)
-                        + " hotspotCidr="
-                        + networkDiscoveryManager.getHotspotCidr()
-                        + " upstreamCidr="
-                        + networkDiscoveryManager.getUpstreamCidr()
-                        + " — "
-                        + reason);
     }
 
     private WritableMap serviceInfoToMap(BonjourService serviceInfo, String browseKey) {

@@ -52,6 +52,8 @@ public class NetworkDiscoveryManager {
 
     private boolean watching = false;
     private String discoveryMode = MODE_NONE;
+    private int lastUpstreamIfIndex = -1;
+    private int lastHotspotIfIndex = -1;
     @Nullable
     private Network hotspotNetwork;
     @Nullable
@@ -114,6 +116,8 @@ public class NetworkDiscoveryManager {
         networkCallback = null;
         hotspotNetwork = null;
         upstreamWifiNetwork = null;
+        lastUpstreamIfIndex = -1;
+        lastHotspotIfIndex = -1;
         setDiscoveryMode(MODE_NONE, -1, -1);
     }
 
@@ -231,14 +235,26 @@ public class NetworkDiscoveryManager {
         for (LinkAddress linkAddress : linkProperties.getLinkAddresses()) {
             if (linkAddress.getAddress() instanceof Inet4Address) {
                 Inet4Address address = (Inet4Address) linkAddress.getAddress();
-                return address.getHostAddress() + "/" + linkAddress.getPrefixLength();
+                int prefix = linkAddress.getPrefixLength();
+                // Samsung dual-homed STA often reports /32; use typical LAN prefix for filter.
+                if (prefix >= 31 && address.isSiteLocalAddress()) {
+                    prefix = 24;
+                }
+                return address.getHostAddress() + "/" + prefix;
             }
         }
         return null;
     }
 
     private void setDiscoveryMode(String mode, int upstreamIfIndex, int hotspotIfIndex) {
+        if (mode.equals(discoveryMode)
+                && upstreamIfIndex == lastUpstreamIfIndex
+                && hotspotIfIndex == lastHotspotIfIndex) {
+            return;
+        }
         discoveryMode = mode;
+        lastUpstreamIfIndex = upstreamIfIndex;
+        lastHotspotIfIndex = hotspotIfIndex;
         if (listener != null) {
             listener.onDiscoveryModeChanged(mode, upstreamIfIndex, hotspotIfIndex);
         }

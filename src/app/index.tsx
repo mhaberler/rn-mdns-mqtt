@@ -26,7 +26,6 @@ import {
   sourceOf,
 } from '@/lib/service-type';
 import type { ServiceEntry } from '@/types/broker';
-import { isHotspotSegment, isUpstreamSegment } from '@/lib/discovered-broker-key';
 import { useScreenInsets } from '@/hooks/use-screen-insets';
 
 const NOT_FOUND_GRACE_MS = 12000;
@@ -73,7 +72,7 @@ export default function ScannerScreen() {
 
   const { preferredBroker, setPreferredBroker, manualBrokers, setManualBrokers } = useAppState();
   const mqttConn = useMqttConnection();
-  const { discoveredBrokers, refresh, hotspotDiscoveryActive } = useMqttDiscovery();
+  const { discoveredBrokers, refresh } = useMqttDiscovery();
 
   const [services] = useState(() => defaultPreconfigured());
   const [manualHost, setManualHost] = useState('');
@@ -104,18 +103,7 @@ export default function ScannerScreen() {
     [discoveredBrokers],
   );
 
-  const upstreamDiscoveredList = useMemo(
-    () => discoveredList.filter(({ service }) => isUpstreamSegment(service)),
-    [discoveredList],
-  );
-
-  const hotspotDiscoveredList = useMemo(
-    () => discoveredList.filter(({ service }) => isHotspotSegment(service)),
-    [discoveredList],
-  );
-
-  const showDiscoveredSection =
-    upstreamDiscoveredList.length > 0 || hotspotDiscoveryActive;
+  const showDiscoveredSection = discoveredList.length > 0;
 
   const manualList = useMemo(
     () => manualBrokers.map((service) => ({ key: brokerKey(service), service })),
@@ -408,40 +396,17 @@ export default function ScannerScreen() {
 
         {showDiscoveredSection ? (
           <BrokerSection title="Discovered">
-            {upstreamDiscoveredList.length > 0 ? (
-              <DiscoveredSubsection title="Upstream WiFi">
-                {upstreamDiscoveredList.map(({ key, service }) => (
-                  <BrokerRow
-                    key={key}
-                    service={service}
-                    preferred={isPreferred(service)}
-                    resolved={service.resolved}
-                    connectReady={isBrokerConnectReady(service)}
-                    onOpen={() => navigateToClient(service)}
-                    onPrefer={() => setPreferred(service)}
-                  />
-                ))}
-              </DiscoveredSubsection>
-            ) : null}
-            {hotspotDiscoveryActive ? (
-              <DiscoveredSubsection title="Hotspot">
-                {hotspotDiscoveredList.length > 0 ? (
-                  hotspotDiscoveredList.map(({ key, service }) => (
-                    <BrokerRow
-                      key={key}
-                      service={service}
-                      preferred={isPreferred(service)}
-                      resolved={service.resolved}
-                      connectReady={isBrokerConnectReady(service)}
-                      onOpen={() => navigateToClient(service)}
-                      onPrefer={() => setPreferred(service)}
-                    />
-                  ))
-                ) : (
-                  <Text style={styles.discoveredEmptyHint}>Scanning hotspot…</Text>
-                )}
-              </DiscoveredSubsection>
-            ) : null}
+            {discoveredList.map(({ key, service }) => (
+              <BrokerRow
+                key={key}
+                service={service}
+                preferred={isPreferred(service)}
+                resolved={service.resolved}
+                connectReady={isBrokerConnectReady(service)}
+                onOpen={() => navigateToClient(service)}
+                onPrefer={() => setPreferred(service)}
+              />
+            ))}
           </BrokerSection>
         ) : null}
 
