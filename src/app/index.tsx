@@ -2,6 +2,7 @@ import { useRouter } from 'expo-router';
 import * as WebBrowser from 'expo-web-browser';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Modal,
   Platform,
   Pressable,
   ScrollView,
@@ -91,6 +92,7 @@ export default function ScannerScreen() {
   const [manualHost, setManualHost] = useState('');
   const [manualPort, setManualPort] = useState(String(DEFAULT_PORT_BY_SERVICE_TYPE[MQTT_TCP]));
   const [selectedType, setSelectedType] = useState<BrokerServiceType>(MQTT_TCP);
+  const [typeMenuOpen, setTypeMenuOpen] = useState(false);
   const [manualRejectUnauthorized, setManualRejectUnauthorized] = useState(true);
   const [manualFormError, setManualFormError] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -466,17 +468,41 @@ export default function ScannerScreen() {
                 onChangeText={setManualPort}
                 keyboardType="number-pad"
               />
-              <View style={styles.typePicker}>
-                {MANUAL_TYPE_OPTIONS.map(({ type, label }) => (
-                  <Pressable
-                    key={type}
-                    style={[styles.typeOption, selectedType === type && styles.typeSelected]}
-                    onPress={() => selectManualType(type)}>
-                    <Text style={styles.typeOptionText}>{label}</Text>
-                  </Pressable>
-                ))}
-              </View>
+              <Pressable
+                style={styles.typeDropdown}
+                onPress={() => setTypeMenuOpen(true)}>
+                <Text style={styles.typeDropdownText}>
+                  {MANUAL_TYPE_OPTIONS.find((o) => o.type === selectedType)?.label ?? 'Type'}
+                </Text>
+                <Text style={styles.typeDropdownCaret}>▾</Text>
+              </Pressable>
             </View>
+            <Modal
+              visible={typeMenuOpen}
+              transparent
+              animationType="fade"
+              onRequestClose={() => setTypeMenuOpen(false)}>
+              <Pressable
+                style={styles.typeMenuBackdrop}
+                onPress={() => setTypeMenuOpen(false)}>
+                <View style={styles.typeMenu}>
+                  {MANUAL_TYPE_OPTIONS.map(({ type, label }) => (
+                    <Pressable
+                      key={type}
+                      style={[
+                        styles.typeMenuItem,
+                        selectedType === type && styles.typeMenuItemSelected,
+                      ]}
+                      onPress={() => {
+                        selectManualType(type);
+                        setTypeMenuOpen(false);
+                      }}>
+                      <Text style={styles.typeMenuItemText}>{label}</Text>
+                    </Pressable>
+                  ))}
+                </View>
+              </Pressable>
+            </Modal>
             {isTlsType(selectedType) ? (
               <View style={styles.tlsRow}>
                 <Switch
@@ -759,18 +785,34 @@ const styles = StyleSheet.create({
   },
   manualRow: { flexDirection: 'row', gap: 8, alignItems: 'center' },
   portInput: { width: 80 },
-  typePicker: { flexDirection: 'row', flexWrap: 'wrap', gap: 4, flex: 1 },
-  typeOption: {
-    minWidth: '47%',
-    flexGrow: 1,
-    paddingVertical: 8,
+  typeDropdown: {
+    flex: 1,
+    flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 10,
+    paddingHorizontal: 12,
     borderWidth: 1,
     borderColor: '#E5E7EB',
     borderRadius: 6,
   },
-  typeOptionText: { fontSize: 12, fontWeight: '600' },
-  typeSelected: { borderColor: Colors.primary, backgroundColor: '#EFF6FF' },
+  typeDropdownText: { fontSize: 14, fontWeight: '600' },
+  typeDropdownCaret: { fontSize: 12, color: Colors.textLight, marginLeft: 8 },
+  typeMenuBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.35)',
+    justifyContent: 'center',
+    paddingHorizontal: 40,
+  },
+  typeMenu: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 10,
+    paddingVertical: 4,
+    overflow: 'hidden',
+  },
+  typeMenuItem: { paddingVertical: 14, paddingHorizontal: 18 },
+  typeMenuItemSelected: { backgroundColor: '#EFF6FF' },
+  typeMenuItemText: { fontSize: 15, fontWeight: '600' },
   empty: { textAlign: 'center', color: Colors.textLight, fontSize: 14, paddingVertical: 32 },
   footer: { flexDirection: 'row', justifyContent: 'center', marginTop: 24 },
   footerLink: { fontSize: 10, color: Colors.textLight, textDecorationLine: 'underline' },
