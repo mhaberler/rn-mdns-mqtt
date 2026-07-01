@@ -34,6 +34,10 @@ _Avoid_: MVP (too vague), full parity
 Local Expo module `zeroconf-nsd` (renamed from `mqtt-zeroconf-nsd`) using Android `NsdManager`. Parallel watches for all configured Bonjour types; flat discovered list. Required for dual-homed hotspot + upstream on S928B (stock zeroconf rotation breaks hotspot resolve).
 _Avoid_: Stock react-native-zeroconf rotation on Android for dual-homed use
 
+**Address resolution (Android)**:
+NsdManager yields **addresses, not a `.local` hostname**. On API 34+ resolution uses a live `registerServiceInfoCallback` returning the full A/AAAA list (multi-address, auto-updating); on 24–33 the deprecated `resolveService` returns a single address. True SRV-target `.local` names are unavailable without raw sockets (out of scope). `hostname` is best-effort; IP addresses are the connect payload. See ADR 0008.
+_Avoid_: Expecting `.local` hostnames from NsdManager; assuming multi-address below API 34
+
 **Stock react-native-zeroconf (Android NSD)**:
 Default Android backend in npm package is `NsdManager`, but single-browse + WS/WSS rotation fails dual-homed hotspot on S928B. See ADR 0005.
 _Avoid_: Assuming stock zeroconf matches Capacitor dual-homed behavior on Samsung
