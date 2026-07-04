@@ -44,3 +44,4 @@ example
 
 # local Expo module Gradle output
 modules/**/android/build/
+.cc-history
