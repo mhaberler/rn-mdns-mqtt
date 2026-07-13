@@ -88,7 +88,7 @@ src/
   hooks/            useMqttDiscovery, useMqttConnection
   lib/              mDNS adapter, MQTT connect, broker host pick
 modules/
-  zeroconf-nsd/     Android NsdManager Expo module (lazy-loaded)
+  zeroconf-nsd/     Expo module: Android NsdManager discovery + iOS .local resolver (lazy-loaded)
 patches/            mqtt.js + react-native-tcp-socket patches
 docs/adr/           Architecture decision records
 ```
@@ -104,7 +104,7 @@ docs/adr/           Architecture decision records
 
 mDNS is **link-local**. Brokers on a different subnet than the phone (e.g. ESP on hotspot while the phone is on upstream Wi‑Fi) will not appear until both are on the same L2 domain.
 
-The Android module is imported lazily so iOS Release builds do not load Android-only native code.
+The `zeroconf-nsd` module is imported lazily; its discovery side is Android-only, its iOS side only provides `.local` hostname resolution (below).
 
 ### MQTT client
 
@@ -116,6 +116,8 @@ All four broker types use **mqtt.js v5** with a unified opts-only connect path:
 Metro is configured to bundle the patched mqtt CJS build (`metro.config.js`), not the browser-only ESM bundle.
 
 On dual-homed Android, native TCP routes outbound sockets through the Wi‑Fi interface that shares a subnet with the broker IP.
+
+On iOS, `.local` hostnames are pre-resolved to IPv4 before native MQTT connects (`src/lib/mdns-resolve.ts` + `zeroconf-nsd` `resolveHostname`). `react-native-tcp-socket` resolves via blocking `getaddrinfo`, which waits ~5s for an AAAA mDNS answer embedded brokers never send; a single IPv4-only A query avoids that. WebSocket connects are unaffected — NSURLSession uses Happy Eyeballs and connects on the first A record.
 
 ### Foreground-only scan
 
