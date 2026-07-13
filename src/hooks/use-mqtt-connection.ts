@@ -8,6 +8,7 @@ import {
 } from '@/lib/broker-host';
 import { getDeviceIPv4 } from '@/lib/device-network';
 import { createExternalStore } from '@/lib/external-store';
+import { withResolvedLocalHost } from '@/lib/mdns-resolve';
 import { buildConnectOptions, connectLogLabel, createMqttClientId, friendlyConnectError } from '@/lib/mqtt-connect';
 import { buildConnectUrl } from '@/lib/mqtt-url';
 import { sourceOf, validateBrokerTypePort } from '@/lib/service-type';
@@ -128,7 +129,10 @@ function connect(brokerArg: ServiceEntry) {
 
   void (async () => {
     try {
-      const preliminary = brokerConnectEndpoint(broker);
+      const target = await withResolvedLocalHost(broker);
+      if (generation !== connectGeneration) return;
+
+      const preliminary = brokerConnectEndpoint(target);
       if (!preliminary) {
         errorStore.setState('Broker not resolved yet — wait for green dot or tap Refresh');
         connectionStateStore.setState('disconnected');
@@ -138,7 +142,7 @@ function connect(brokerArg: ServiceEntry) {
       const deviceIp = await getDeviceIPv4(preliminary.host);
       if (generation !== connectGeneration) return;
 
-      const endpoint = brokerConnectEndpoint(broker, deviceIp);
+      const endpoint = brokerConnectEndpoint(target, deviceIp);
       if (!endpoint) {
         errorStore.setState(
           deviceIp
@@ -150,9 +154,9 @@ function connect(brokerArg: ServiceEntry) {
       }
 
       const typePortError = validateBrokerTypePort(
-        broker.type,
+        target.type,
         endpoint.port,
-        sourceOf(broker),
+        sourceOf(target),
       );
       if (typePortError) {
         errorStore.setState(typePortError);
@@ -160,12 +164,12 @@ function connect(brokerArg: ServiceEntry) {
         return;
       }
 
-      const options = mqttOptions(broker, 30000);
-      const connectOpts = buildConnectOptions(broker, options, deviceIp);
+      const options = mqttOptions(target, 30000);
+      const connectOpts = buildConnectOptions(target, options, deviceIp);
       if (__DEV__) {
-        console.log(connectLogLabel(broker, connectOpts, deviceIp));
+        console.log(connectLogLabel(target, connectOpts, deviceIp));
       }
-      addMessage('system', connectLogLabel(broker, connectOpts, deviceIp));
+      addMessage('system', connectLogLabel(target, connectOpts, deviceIp));
       mqttClient = mqtt.connect(connectOpts);
 
     mqttClient.on('connect', () => {
@@ -188,7 +192,7 @@ function connect(brokerArg: ServiceEntry) {
 
     mqttClient.on('error', (err: Error) => {
       if (generation !== connectGeneration) return;
-      errorStore.setState(friendlyConnectError(err?.message || 'Unknown error', broker));
+      errorStore.setState(friendlyConnectError(err?.message || 'Unknown error', target));
       connectionStateStore.setState('disconnected');
       cleanup();
     });
@@ -199,11 +203,11 @@ function connect(brokerArg: ServiceEntry) {
       const wasConnected = connectionStateStore.getState() === 'connected';
       connectionStateStore.setState('disconnected');
       if (wasTrying) {
-        const endpoint = brokerConnectEndpoint(broker);
+        const endpoint = brokerConnectEndpoint(target);
         errorStore.setState(
           (current) =>
             current ??
-            `Connection closed before CONNACK (${endpoint?.host}:${endpoint?.port ?? broker.port}) — wrong IP/interface or broker rejected CONNECT`,
+            `Connection closed before CONNACK (${endpoint?.host}:${endpoint?.port ?? target.port}) — wrong IP/interface or broker rejected CONNECT`,
         );
       } else if (wasConnected) {
         addMessage('system', 'Connection closed');
@@ -289,7 +293,8 @@ async function testConnect(broker: ServiceEntry, timeoutMs: number = 15000): Pro
 
     void (async () => {
       try {
-        const preliminary = brokerConnectEndpoint(broker);
+        const target = await withResolvedLocalHost(broker);
+        const preliminary = brokerConnectEndpoint(target);
         if (!preliminary) {
           testConnectInFlight = false;
           resolve(false);
@@ -297,9 +302,9 @@ async function testConnect(broker: ServiceEntry, timeoutMs: number = 15000): Pro
         }
 
         const deviceIp = await getDeviceIPv4(preliminary.host);
-        const connectOpts = buildConnectOptions(broker, options, deviceIp);
+        const connectOpts = buildConnectOptions(target, options, deviceIp);
         if (__DEV__) {
-          console.log(connectLogLabel(broker, connectOpts, deviceIp));
+          console.log(connectLogLabel(target, connectOpts, deviceIp));
         }
         const testClient = mqtt.connect(connectOpts);
 

@@ -24,6 +24,8 @@ type ZeroconfNsdNativeModule = {
   close(): Promise<void>;
   getLocalIPv4ForRemote(remoteHost: string): Promise<string | null>;
   getWifiIPv4Addresses(): Promise<string[]>;
+  /** iOS only: IPv4-only .local resolve (single mDNS A query, no AAAA wait). */
+  resolveHostname(hostname: string): Promise<string[]>;
   addListener(eventName: 'onService', listener: (event: NsdServiceEvent) => void): EventSubscription;
 };
 
@@ -67,4 +69,8 @@ export async function getLocalIPv4ForRemote(remoteHost: string): Promise<string 
 
 export async function getWifiIPv4Addresses(): Promise<string[]> {
   return getNativeModule().getWifiIPv4Addresses();
+}
+
+export async function resolveHostname(hostname: string): Promise<string[]> {
+  return getNativeModule().resolveHostname(hostname);
 }
