@@ -2,6 +2,7 @@ import '@/lib/polyfills';
 
 import mqtt, { type IClientOptions, type MqttClient } from 'mqtt';
 
+import { MQTT_CONNECT_TIMEOUT_MS } from '@/constants/mqtt';
 import {
   brokerConnectEndpoint,
   isBrokerConnectReady,
@@ -233,7 +234,7 @@ function connect(brokerArg: ServiceEntry) {
         connectionStateStore.setState('disconnected');
         cleanup();
       }
-    }, 15000);
+    }, MQTT_CONNECT_TIMEOUT_MS);
     } catch (err: unknown) {
       if (generation !== connectGeneration) return;
       const msg = err instanceof Error ? err.message : 'Unknown error';
@@ -269,7 +270,7 @@ function publish(topic: string, payload: string): Promise<void> {
   });
 }
 
-async function testConnect(broker: ServiceEntry, timeoutMs: number = 15000): Promise<boolean> {
+async function testConnect(broker: ServiceEntry, timeoutMs: number = MQTT_CONNECT_TIMEOUT_MS): Promise<boolean> {
   if (!isBrokerConnectReady(broker)) return false;
   if (connectionStateStore.getState() === 'trying') return false;
   const endpoint = brokerConnectEndpoint(broker);
